@@ -1,0 +1,12 @@
+[macro first]
+    [invoke second]
+[endmacro]
+
+[macro second]
+    !echo hello
+[endmacro]
+
+[shell demo]
+    !echo world
+    ?echo world
+    ?world

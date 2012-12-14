@@ -1,0 +1,4 @@
+[include outer.luxinc]
+
+[shell demo2]
+    [invoke first]
