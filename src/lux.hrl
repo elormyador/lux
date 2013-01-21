@@ -16,10 +16,11 @@
 -define(TAG(Tag), lux_utils:tag_prefix(Tag)).
 
 -record(cmd,
-        {lineno :: non_neg_integer(),
-         type   :: atom(),
-         arg    :: term(),
-         raw    :: binary()}).
+        {type     :: atom(),
+         rev_file :: [string()],
+         pos      :: non_neg_integer(), % Line number
+         arg      :: term(),
+         raw      :: binary()}).
 
 -record(shell,
         {name   :: string(),
@@ -30,8 +31,8 @@
 -record(result,
         {outcome       :: fail | success | shutdown,
          name          :: string(),
-         lineno        :: non_neg_integer(),
-         incl_stack    :: [{string(), non_neg_integer()}],
+         pos           :: non_neg_integer(), % Line number
+         call_stack    :: [{string(), non_neg_integer()}],
          expected      :: binary() | atom(),
          extra         :: undefined | atom() | binary(),
          actual        :: binary() | atom(),
@@ -40,13 +41,21 @@
                             atom(),
                             binary() | atom() | string()}]}).
 
+-record(lineno,
+        {rev_file :: [string()],
+         rev_pos  :: [non_neg_integer()]
+        }).
+
 -record(break,
-        {pos  :: [non_neg_integer() | string() | {string(), non_neg_integer()}],
-         type :: temporary | next | enabled | disabled}).
+        {lineno      :: #lineno{},
+         type        :: temporary | next | enabled | disabled,
+         call_stacks :: [[{string(), non_neg_integer()}]]}).
 
 -record(istate,
         {file                       :: string(),
+         rev_file                   :: [string()],
          orig_file                  :: string(),
+         orig_rev_file              :: [string()],
          mode = running             :: running | cleanup | stopping,
          cleanup_reason = normal    :: fail | success | normal,
          debug = false              :: boolean(),
@@ -84,8 +93,8 @@
          commands                   :: [#cmd{}],
          orig_commands              :: [#cmd{}],
          macros = []                :: [],
-         latest_lineno = 0          :: non_neg_integer(),
-         incl_stack = []            :: [non_neg_integer()],
+         latest_pos = 0             :: non_neg_integer(),
+         call_stack = []            :: [{string(), non_neg_integer()}],
          macro_dict = []            :: [string()],   % ["name=val"]
          dict = []                  :: [string()],   % ["name=val"]
          builtin_dict               :: [string()],   % ["name=val"]

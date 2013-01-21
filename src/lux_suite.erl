@@ -338,7 +338,7 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                     run_cases(Mode, R#rstate{warnings = AllWarnings},
                               SuiteFile, Scripts, NewSummary, Results2);
                doc ->
-                    Docs = extract_doc(Script2, Commands),
+                    Docs = extract_cmds(doc, Commands),
                     {ok, Cwd} = file:get_cwd(),
                     io:format("~s:\n",
                               [lux_utils:drop_prefix(Cwd, Script)]),
@@ -380,9 +380,9 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                                [?TAG("test case"), Script]),
                     Res = lux:interpret_commands(Script2, Commands, Opts),
                     case Res of
-                        {ok, _, Summary, FullLineNo, Events} ->
+                        {ok, _, Summary, CallStack, Events} ->
                             NewSummary = lux_utils:summary(OldSummary, Summary),
-                            Res2 = {ok, Script, Summary, FullLineNo, Events},
+                            Res2 = {ok, Script, Summary, CallStack, Events},
                             Results2 = [Res2 | Results];
                         {error, _, _, _} ->
                             Summary = error,
@@ -392,13 +392,13 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                     run_cases(Mode, R#rstate{warnings = AllWarnings},
                               SuiteFile, Scripts, NewSummary, Results2)
             end;
-        {error, _R2, _File2, _FullLineNo, _Error2} when Mode =:= list ->
+        {error, _R2, _File2, _CallStack, _Error2} when Mode =:= list ->
             io:format("~s\n", [Script]),
             run_cases(Mode, R, SuiteFile, Scripts, OldSummary, Results);
-        {error, _R2, File2, _FullLineNo, Error2} when Mode =:= doc ->
+        {error, _R2, File2, _CallStack, Error2} when Mode =:= doc ->
             io:format("~s:\n\tERROR: ~s: ~s\n", [Script, File2, Error2]),
             run_cases(Mode, R, SuiteFile, Scripts, OldSummary, Results);
-        {error, R2, File2, FullLineNo, Error2} ->
+        {error, R2, File2, CallStack, Error2} ->
             double_log(R2, "\n~s~s\n",
                        [?TAG("test case"), Script]),
             double_log(R2, "~sERROR ~s: ~s\n",
@@ -407,7 +407,7 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
             AllWarnings = R#rstate.warnings ++ NewWarnings,
             Summary = error,
             NewSummary = lux_utils:summary(OldSummary, Summary),
-            Results2 = [{error, File2, FullLineNo, Error2} | Results],
+            Results2 = [{error, File2, CallStack, Error2} | Results],
             run_cases(Mode, R#rstate{warnings = AllWarnings},
                      SuiteFile, Scripts, NewSummary, Results2)
     end;
@@ -448,17 +448,13 @@ test_variable(R, NameVal) ->
             false
     end.
 
-
-extract_doc(File, Cmds) ->
-    Fun = fun(Cmd, _RevFile, _InclStack, Acc) ->
-                  case Cmd of
-                      #cmd{type = doc} ->
-                          [Cmd | Acc];
-                      _ ->
-                          Acc
-                  end
+extract_cmds(Type, Cmds) ->
+    Fun = fun(#cmd{type=T}=Cmd, _CallStack, Acc) when T =:= Type ->
+                  [Cmd | Acc];
+             (#cmd{}, _CallStack, Acc) ->
+                  Acc
           end,
-    lists:reverse(lux_utils:foldl_cmds(Fun, [], File, [], Cmds)).
+    lists:reverse(lux_utils:foldl_cmds(Fun, [], [], Cmds, include)).
 
 print_results(R, Summary, Results) when R#rstate.mode == list;
                                         R#rstate.mode == doc ->
@@ -468,7 +464,7 @@ print_results(R, Summary, Results) ->
     io:nl(),
     log(R, "\n", []),
     SuccessScripts =
-        [Script || {ok, Script, success, _FullLineNo, _Events} <- Results],
+        [Script || {ok, Script, success, _CallStack, _Events} <- Results],
     double_log(R, "~s~p\n",
                [?TAG("successful"),
                 length(SuccessScripts)]),
@@ -482,8 +478,8 @@ print_results(R, Summary, Results) ->
                     Char <- atom_to_list(Summary)]]).
 
 print_error(R, Results) ->
-    case [{Script, FullLineNo} ||
-             {error, Script, FullLineNo, _String} <- Results] of
+    case [{Script, CallStack} ||
+             {error, Script, CallStack, _String} <- Results] of
         [] ->
             ok;
         ErrorScripts ->
@@ -495,8 +491,8 @@ print_error(R, Results) ->
     end.
 
 print_fail(R, Results) ->
-    case [{Script, FullLineNo} ||
-             {ok, Script, fail, FullLineNo, _Events} <- Results] of
+    case [{Script, CallStack} ||
+             {ok, Script, fail, CallStack, _Events} <- Results] of
         [] ->
             ok;
         FailScripts ->
@@ -507,8 +503,8 @@ print_fail(R, Results) ->
     end.
 
 print_skip(R, Results) ->
-    case [{Script, FullLineNo} ||
-             {ok, Script, skip, FullLineNo, _Events} <- Results] of
+    case [{Script, CallStack} ||
+             {ok, Script, skip, CallStack, _Events} <- Results] of
         [] ->
             ok;
         SkipScripts ->
@@ -520,8 +516,8 @@ print_skip(R, Results) ->
 
 
 print_warning(R) ->
-    case [{Script, FullLineNo} ||
-             {warning, Script, FullLineNo, _String} <- R#rstate.warnings] of
+    case [{Script, CallStack} ||
+             {warning, Script, CallStack, _String} <- R#rstate.warnings] of
         [] ->
             ok;
         WarnScripts ->
@@ -551,8 +547,8 @@ parse_script(R, SuiteFile, Script) ->
             R3 = FileR#rstate{user_opts = UserOpts,
                               file_opts = FileOpts2},
             {ok, R3, Script2, Commands, Opts};
-        {error, Script2, FullLineNo, Bin} ->
-            {error, R, Script2, FullLineNo, Bin}
+        {error, Script2, CallStack, Bin} ->
+            {error, R, Script2, CallStack, Bin}
     end.
 
 parse_config(R) ->
@@ -613,7 +609,7 @@ parse_config_file(R, ConfigFile) ->
                         lists:keystore(Key, 1, Opts, {Key, Dir2})
                 end,
             lists:keydelete(log_dir, 1, Opts2);
-        {error, Script, _FullLineNo, Bin} ->
+        {error, Script, _CallStack, Bin} ->
             Enoent =  list_to_binary(file:format_error(enoent)),
             if
                 Bin =:= Enoent ->
@@ -702,12 +698,12 @@ log_dir(R, SuiteFile, Script) ->
             end
     end.
 
-%% warning(R, false, _File, _FullLineNo, _Format, _Args) ->
+%% warning(R, false, _File, _CallStack, _Format, _Args) ->
 %%     R;
-%% warning(R, true, File, FullLineNo, Format, Args) ->
+%% warning(R, true, File, CallStack, Format, Args) ->
 %%     Warning = lists:flatten(io_lib:format(Format, Args)),
 %%     log(R, "~s~s", [?TAG("warning"), Warning]),
-%%     R#rstate{warnings = [{warning, File, FullLineNo, Warning} |
+%%     R#rstate{warnings = [{warning, File, CallStack, Warning} |
 %%     R#rstate.warnings]}.
 
 double_log(#rstate{log_fd = Fd}, Format, Args) ->

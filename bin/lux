@@ -746,10 +746,11 @@ resolve_path(Path) ->
     do_resolve_path(filename:split(Path), []).
 
 do_resolve_path([H | T], ResolvedPath) ->
-    ResolvedPath2 = case ResolvedPath of
-                        [] -> filename:absname(H);
-                        _  -> filename:join([ResolvedPath, H])
-                    end,
+    ResolvedPath2 =
+        case ResolvedPath of
+            [] -> filename:absname(H);
+            _  -> filename:join([ResolvedPath, H])
+        end,
     case file:read_link(ResolvedPath2) of
         {error, _} -> % Normal file
             do_resolve_path(T, ResolvedPath2);
@@ -760,4 +761,3 @@ do_resolve_path([H | T], ResolvedPath) ->
     end;
 do_resolve_path([], ResolvedPath) ->
     ResolvedPath.
-

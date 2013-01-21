@@ -480,8 +480,9 @@ parse_result(RawResult) ->
     %% io:format("Result: ~p\n", [R]),
     {result, R}.
 
-interleave_code(A, Events, Script, FirstLineNo, MaxLineNo, InclStack, Files) ->
-    ScriptComps = lux_utils:filename_split(Script),
+interleave_code(A, Events, Script, FirstLineNo, MaxLineNo, CallStack, Files) ->
+    {ok, Cwd} = file:get_cwd(),
+    SplitFiles = lux_utils:filename_split(Cwd, Script),
     case file:read_file(Script) of
         {ok, ScriptBin} ->
             NewScript = orig_script(A, Script),
@@ -506,62 +507,62 @@ interleave_code(A, Events, Script, FirstLineNo, MaxLineNo, InclStack, Files) ->
                     false -> [{file, Script, NewScript} | Files];
                     true  -> Files
                 end,
-            do_interleave_code(A, Events, ScriptComps, CodeLines2,
-                               FirstLineNo, MaxLineNo, [], InclStack, Files2);
+            do_interleave_code(A, Events, SplitFiles, CodeLines2,
+                               FirstLineNo, MaxLineNo, [], CallStack, Files2);
         {error, FileReason} ->
             ReasonStr = binary_to_list(Script) ++ ": " ++
                 file:format_error(FileReason),
             io:format("ERROR(lux): ~s\n", [ReasonStr]),
-            do_interleave_code(A, Events, ScriptComps, [],
-                               FirstLineNo, MaxLineNo, [], InclStack, Files)
+            do_interleave_code(A, Events, SplitFiles, [],
+                               FirstLineNo, MaxLineNo, [], CallStack, Files)
     end.
 
 do_interleave_code(A, [{include, LineNo, FirstLineNo, LastLineNo,
                         SubScript, SubEvents} |
                        Events],
-                   ScriptComps, CodeLines, CodeLineNo, MaxLineNo,
-                   Acc, InclStack, Files) ->
-    InclStack2 = [{ScriptComps, LineNo} | InclStack],
+                   SplitFiles, CodeLines, CodeLineNo, MaxLineNo,
+                   Acc, CallStack, Files) ->
+    CallStack2 = [{SplitFiles, LineNo} | CallStack],
     {SubAnnotated, Files2} =
         interleave_code(A, SubEvents, SubScript, FirstLineNo, LastLineNo,
-                        InclStack2, Files),
-    Event = {include_html, InclStack2, FirstLineNo, SubScript, SubAnnotated},
-    do_interleave_code(A, Events, ScriptComps, CodeLines, CodeLineNo,
-                       MaxLineNo, [Event | Acc], InclStack, Files2);
+                        CallStack2, Files),
+    Event = {include_html, CallStack2, FirstLineNo, SubScript, SubAnnotated},
+    do_interleave_code(A, Events, SplitFiles, CodeLines, CodeLineNo,
+                       MaxLineNo, [Event | Acc], CallStack, Files2);
 do_interleave_code(A, [{event, SingleLineNo, Item, Shell, Data},
                        {event, SingleLineNo, Item, Shell, Data2} | Events],
-                   ScriptComps, CodeLines, CodeLineNo, MaxLineNo,
-                   Acc, InclStack, Files) when Item =:= <<"recv">>,
+                   SplitFiles, CodeLines, CodeLineNo, MaxLineNo,
+                   Acc, CallStack, Files) when Item =:= <<"recv">>,
                                                Data2 =/= [<<"timeout">>]->
     %% Combine two chunks of recv data into one in order to improve readability
     [Last | Rev] = lists:reverse(Data),
     [First | Rest] = Data2,
     Data3 = lists:reverse(Rev, [<<Last/binary, First/binary>> | Rest]),
     do_interleave_code(A, [{event, SingleLineNo, Item, Shell, Data3} | Events],
-                       ScriptComps, CodeLines, CodeLineNo,
-                       MaxLineNo, Acc, InclStack, Files);
+                       SplitFiles, CodeLines, CodeLineNo,
+                       MaxLineNo, Acc, CallStack, Files);
 do_interleave_code(A, [{event, SingleLineNo, _Item, Shell, Data} | Events],
-                   ScriptComps, CodeLines, CodeLineNo, MaxLineNo,
-                   Acc, InclStack, Files) ->
+                   SplitFiles, CodeLines, CodeLineNo, MaxLineNo,
+                   Acc, CallStack, Files) ->
     {CodeLines2, CodeLineNo2, Code} =
-        pick_code(ScriptComps, CodeLines, CodeLineNo, SingleLineNo,
-                  [], InclStack),
-    InclStack2 = [{ScriptComps, SingleLineNo} | InclStack],
-    Acc2 = [{event_html, InclStack2, _Item, Shell, Data}] ++ Code ++ Acc,
-    do_interleave_code(A, Events, ScriptComps, CodeLines2, CodeLineNo2,
-                       MaxLineNo, Acc2, InclStack, Files);
-do_interleave_code(_A, [], ScriptComps, CodeLines, CodeLineNo, MaxLineNo,
-                   Acc, InclStack, Files) ->
-    X = pick_code(ScriptComps, CodeLines, CodeLineNo, MaxLineNo, [], InclStack),
+        pick_code(SplitFiles, CodeLines, CodeLineNo, SingleLineNo,
+                  [], CallStack),
+    CallStack2 = [{SplitFiles, SingleLineNo} | CallStack],
+    Acc2 = [{event_html, CallStack2, _Item, Shell, Data}] ++ Code ++ Acc,
+    do_interleave_code(A, Events, SplitFiles, CodeLines2, CodeLineNo2,
+                       MaxLineNo, Acc2, CallStack, Files);
+do_interleave_code(_A, [], SplitFiles, CodeLines, CodeLineNo, MaxLineNo,
+                   Acc, CallStack, Files) ->
+    X = pick_code(SplitFiles, CodeLines, CodeLineNo, MaxLineNo, [], CallStack),
     {_Skipped, _CodeLineNo, Code} = X,
     {lists:reverse(Code ++ Acc), Files}.
 
-pick_code(ScriptComps, [Line | Lines], CodeLineNo, LineNo, Acc, InclStack)
+pick_code(SplitFiles, [Line | Lines], CodeLineNo, LineNo, Acc, CallStack)
   when LineNo >= CodeLineNo ->
-    InclStack2 = [{ScriptComps, CodeLineNo} | InclStack],
-    pick_code(ScriptComps, Lines, CodeLineNo+1, LineNo,
-              [{code_html, InclStack2, Line} | Acc], InclStack);
-pick_code(_ScriptComps, Lines, CodeLineNo, _LineNo, Acc, _InclStack) ->
+    CallStack2 = [{SplitFiles, CodeLineNo} | CallStack],
+    pick_code(SplitFiles, Lines, CodeLineNo+1, LineNo,
+              [{code_html, CallStack2, Line} | Acc], CallStack);
+pick_code(_SplitFiles, Lines, CodeLineNo, _LineNo, Acc, _CallStack) ->
     {Lines, CodeLineNo, Acc}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -649,32 +650,32 @@ html_code(A, Annotated) ->
 
 html_code2(A, [Ann | Annotated], Prev) ->
     case Ann of
-        {code_html, LineNoStack, Code} ->
+        {code_html, CallStack, Code} ->
             Curr = code,
-            FullLineNo = lux_utils:full_lineno(LineNoStack),
+            PrettyCallStack = lux_utils:pretty_call_stack(CallStack),
             [
              html_toggle_div(Curr, Prev),
              case Code of
                  <<"[cleanup]">> -> "<a name=\"cleanup\"></a>";
                  _               -> ""
              end,
-             html_anchor(FullLineNo, FullLineNo), ": ",
+             html_anchor(CallStack, PrettyCallStack), ": ",
              html_cleanup(Code),
              "\n",
              html_code2(A, Annotated, Curr)
             ];
-        {event_html, LineNoStack, Item, Shell, Data} ->
+        {event_html, CallStack, Item, Shell, Data} ->
             Curr = event,
-            FullLineNo = lux_utils:full_lineno(LineNoStack),
-            Html = [Shell, "(", FullLineNo, "): ", Item, " "],
+            PrettyCallStack = lux_utils:pretty_call_stack(CallStack),
+            Html = [Shell, "(", PrettyCallStack, "): ", Item, " "],
             [
              html_toggle_div(Curr, Prev),
              html_cleanup(Html),
              html_opt_div(Item, Data),
              html_code2(A, Annotated, Curr)
             ];
-        {include_html, LineNoStack, _MacroLineNo, SubScript, SubAnnotated} ->
-            FullLineNo = lux_utils:full_lineno(LineNoStack),
+        {include_html, CallStack, _MacroLineNo, SubScript, SubAnnotated} ->
+            PrettyCallStack = lux_utils:pretty_call_stack(CallStack),
             RelSubScript = drop_prefix(A, SubScript),
             [
              html_toggle_div(code, Prev),
@@ -684,7 +685,7 @@ html_code2(A, [Ann | Annotated], Prev) ->
              "</pre></div>",
              html_code(A, SubAnnotated),
              html_toggle_div(code, event),
-             html_anchor(FullLineNo, FullLineNo), ": ",
+             html_anchor(PrettyCallStack, PrettyCallStack), ": ",
              html_toggle_div(event, code),
              html_opt_div(<<"include">>,
                           [<<"exiting file: ", RelSubScript/binary>>]),
@@ -1309,17 +1310,17 @@ find_config(Key, Tuples, Default) ->
 %%    {2,[{2,1},{2,2}]},
 %%    {3,[{3,2},{3,1},{3,3}]}]
 
-keysplit(Pos, List) ->
-    keysplit(Pos, List, undefined).
+keysplit(Index, List) ->
+    keysplit(Index, List, undefined).
 
-keysplit(Pos, List, Fun) ->
-    do_keysplit(Pos, lists:keysort(Pos, List), Fun, [], []).
+keysplit(Index, List, Fun) ->
+    do_keysplit(Index, lists:keysort(Index, List), Fun, [], []).
 
-do_keysplit(Pos, [H, N | T], Fun, Siblings, Acc)
-  when element(Pos, H) =:= element(Pos, N) ->
+do_keysplit(Index, [H, N | T], Fun, Siblings, Acc)
+  when element(Index, H) =:= element(Index, N) ->
     %% Collect items with same tag
-    do_keysplit(Pos, [N | T], Fun, [H | Siblings], Acc);
-do_keysplit(Pos, [H | T], Fun, Siblings, Acc) ->
+    do_keysplit(Index, [N | T], Fun, [H | Siblings], Acc);
+do_keysplit(Index, [H | T], Fun, Siblings, Acc) ->
     Siblings2 = [H | Siblings],
     Siblings3 =
         if
@@ -1328,8 +1329,8 @@ do_keysplit(Pos, [H | T], Fun, Siblings, Acc) ->
             is_function(Fun, 2) ->
                 lists:sort(Fun, Siblings2)
         end,
-    do_keysplit(Pos, T, Fun, [], [{element(Pos, H), Siblings3} | Acc]);
-do_keysplit(_Pos, [], _Fun, [], Acc) ->
+    do_keysplit(Index, T, Fun, [], [{element(Index, H), Siblings3} | Acc]);
+do_keysplit(_Index, [], _Fun, [], Acc) ->
     lists:reverse(Acc).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

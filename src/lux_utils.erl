@@ -9,11 +9,12 @@
 
 -export([builtin_dict/0, system_dict/0, expand_vars/3,
          summary/2, summary_prio/1,
-         multiply/2, drop_prefix/1, drop_prefix/2,
+         multiply/2, drop_prefix/2,
          strip_leading_whitespaces/1, strip_trailing_whitespaces/1,
          to_string/1, safe_format/5, safe_write/4, tag_prefix/1,
          progress_write/2, fold_files/5, foldl_cmds/5,
-         full_lineno/1, filename_split/1, dequote/1,
+         pretty_call_stack/1, pretty_lineno/2, pretty_rev_file/1,
+         call_stack_to_lineno/1, filename_split/2, dequote/1,
          now_to_string/1, datetime_to_string/1]).
 
 -include("lux.hrl").
@@ -162,10 +163,6 @@ multiply(infinity, _Factor) ->
     infinity;
 multiply(Timeout, Factor) ->
     (Timeout * Factor) div 1000.
-
-drop_prefix(File) ->
-    {ok, Cwd} = file:get_cwd(),
-    lux_utils:drop_prefix(Cwd, File).
 
 drop_prefix(Prefix, File) ->
     case do_drop_prefix(filename:split(Prefix),
@@ -351,38 +348,115 @@ do_fold_files(File, RegExp, Recursive, Fun, Acc, IsTopLevel) ->
             Acc
     end.
 
-foldl_cmds(Fun, Acc, File, InclStack, Cmds) ->
-    File2 = lux_utils:drop_prefix(File),
-    RevFile = lux_utils:filename_split(File2),
-    do_foldl_cmds(Fun, Acc, RevFile, InclStack, Cmds).
+foldl_cmds(Fun, Acc, CallStack, Cmds, Depth)
+  when is_function(Fun, 3), is_list(CallStack), Depth =/= macro ->
+    Macros = [],
+    do_foldl_cmds(Fun, Acc, CallStack, Cmds, Macros, Depth);
+foldl_cmds(#istate{orig_commands=Cmds, macros=Macros},
+           Fun, Acc, CallStack, Depth)
+  when is_function(Fun, 3), is_list(CallStack) ->
+    do_foldl_cmds(Fun, Acc, CallStack, Cmds, Macros, Depth).
 
-do_foldl_cmds(Fun, Acc, RevFile, InclStack, [Cmd | Cmds]) ->
+-spec(do_foldl_cmds(Fun, Acc0, CallStack, Cmds, Macros, Depth) -> Acc when
+      Fun :: fun((FunCmd, FunCallStack, FunAcc0) -> FunAcc),
+      FunCmd :: #cmd{},
+      FunCallStack :: [{[string()],non_neg_integer()}],
+      FunAcc0 :: term(),
+      FunAcc :: term(),
+      Acc0 :: term(),
+      CallStack :: [{[string()], non_neg_integer()}],
+      Cmds :: [#cmd{}],
+      Macros :: [#cmd{}],
+      Depth :: local|include|macro,
+      Acc :: term()).
+
+do_foldl_cmds(Fun, Acc, CallStack, [Cmd|Cmds], Macros, Depth) ->
     Acc2 =
         case Cmd of
             #cmd{type = include,
-                 lineno = LineNo,
-                 arg = {include, SubFile, _FirstLineNo,
-                        _LastFileNo, SubCmds}} ->
-                SubAcc = Fun(Cmd, RevFile, InclStack, Acc),
-                foldl_cmds(Fun,
-                           SubAcc,
-                           SubFile,
-                           [{RevFile, LineNo} | InclStack],
-                           SubCmds);
+                 arg = {include, _BodyFile, _FirstPos, _LastPos, Body},
+                 rev_file = RevFile,
+                 pos = Pos}
+              when Depth =:= include; Depth =:= macro ->
+                NewAcc = Fun(Cmd, CallStack, Acc),
+                do_foldl_cmds(Fun,
+                              NewAcc,
+                              [{RevFile, Pos} | CallStack],
+                              Body,
+                              Macros,
+                              Depth);
+            #cmd{type = macro,
+                 arg = {macro, _Name, _ArgNames, _Pos, _LastPos, Body}} ->
+                NewAcc = Fun(Cmd, CallStack, Acc),
+                do_foldl_cmds(Fun,
+                              NewAcc,
+                              CallStack,
+                              Body,
+                              Macros,
+                              Depth);
+            #cmd{type = invoke,
+                 arg = {invoke, Name, _ArgVals},
+                 rev_file = RevFile,
+                 pos = Pos}
+              when Depth =:= macro ->
+                case [M || M <- Macros, M#macro.name =:= Name] of
+                    [#macro{cmd=#cmd{arg = {macro, _Name, _ArgNames,
+                                            _FirstPos, _LastPos,
+                                            Body}}}] ->
+                        NewAcc = Fun(Cmd, CallStack, Acc),
+                        do_foldl_cmds(Fun,
+                                      NewAcc,
+                                      [{RevFile, Pos} | CallStack],
+                                      Body,
+                                      Macros,
+                                      Depth);
+                    [] ->
+                        %% No matching macro
+                        Acc;
+                    _Ambig ->
+                        %% More then one matching macro
+                        Acc
+                end;
             #cmd{} ->
-                Fun(Cmd, RevFile, InclStack, Acc)
+                Fun(Cmd, CallStack, Acc)
         end,
-    do_foldl_cmds(Fun, Acc2, RevFile, InclStack, Cmds);
-do_foldl_cmds(_Fun, Acc, _RevFile, _InclStack, []) ->
+    do_foldl_cmds(Fun, Acc2, CallStack, Cmds, Macros, Depth);
+do_foldl_cmds(_Fun, Acc, _CallStack, [], _Macros, _Depth) ->
     Acc.
 
-full_lineno([{_FileComps, LineNo} | InclStack]) ->
-    LineNoPrefix = [[integer_to_list(No), ":"] ||
-                       {_F, No} <- lists:reverse(InclStack)],
-    lists:flatten([LineNoPrefix, integer_to_list(LineNo)]).
+call_stack_to_lineno(CallStack) ->
+    RevPos = [Pos || {_RevFile,Pos} <- CallStack],
+    {RevFile, _Pos} = hd(CallStack),
+    #lineno{rev_file=RevFile, rev_pos=RevPos}.
 
-filename_split(FileName) ->
-    FileName2 = drop_prefix(FileName),
+%% Do NOT display file name
+pretty_call_stack([{_RevFile, Pos} | CallStack]) ->
+    lists:flatten([[[integer_to_list(P), ":"] ||
+                       {_F, P} <- lists:reverse(CallStack)],
+                   integer_to_list(Pos)]).
+
+%% Do display file name
+pretty_lineno(I, #lineno{rev_file=RevFile, rev_pos=[Pos|RevPos]}) ->
+    OptFile =
+        if
+            RevFile =/= I#istate.orig_rev_file ->
+                pretty_rev_file(RevFile) ++ "@";
+            true ->
+                ""
+        end,
+    lists:flatten([OptFile,
+                   [[integer_to_list(P), ":"] || P <- lists:reverse(RevPos)],
+                   integer_to_list(Pos)
+                  ]);
+pretty_lineno(I, CallStack) when is_list(CallStack) ->
+    LineNo = call_stack_to_lineno(CallStack),
+    pretty_lineno(I, LineNo).
+
+pretty_rev_file(RevFile) ->
+    filename:join(lists:reverse(RevFile)).
+
+filename_split(Cwd, FileName) ->
+    FileName2 = drop_prefix(Cwd, FileName),
     lists:reverse(filename:split(FileName2)).
 
 now_to_string(Now) ->

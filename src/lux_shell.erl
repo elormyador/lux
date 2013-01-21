@@ -164,7 +164,7 @@ shell_loop(#cstate{idle_count = IdleCount} = C, OrigC) ->
         case IdleCount of
             1 ->
                 {C#cstate{idle_count = IdleCount+1},
-                 integer_to_list((C#cstate.latest_cmd)#cmd.lineno) ++ "?"};
+                 integer_to_list((C#cstate.latest_cmd)#cmd.pos) ++ "?"};
             _ ->
                 {C, "."}
         end,
@@ -216,7 +216,7 @@ shell_wait_for_event(#cstate{name = _Name, port = Port} = C, OrigC) ->
                 suspend ->
                     log(C2, "~p\n", [Mode]);
                 resume ->
-                    log(C2, "~p (idle since line ~p)\n", [Mode, Cmd#cmd.lineno])
+                    log(C2, "~p (idle since line ~p)\n", [Mode, Cmd#cmd.pos])
             end,
             expect_more(C2#cstate{mode = Mode, waiting = false});
         {expand_vars, From, Bin, MissingVar} ->
@@ -502,7 +502,7 @@ parse_int(C, Chars, Cmd) ->
     catch
         error:_ ->
             BinErr = list_to_binary(["Syntax error at line ",
-                                     integer_to_list(Cmd#cmd.lineno),
+                                     integer_to_list(Cmd#cmd.pos),
                                      ": '", Chars2, "' integer expected"]),
             stop(C, error, BinErr)
     end.
@@ -763,7 +763,7 @@ stop(C, Outcome, Actual) when is_binary(Actual); is_atom(Actual) ->
     end,
     Res =  #result{outcome = Outcome2,
                    name = C#cstate.name,
-                   lineno = Cmd#cmd.lineno,
+                   pos = Cmd#cmd.pos,
                    expected = Expected,
                    extra = Extra,
                    actual = Actual,
@@ -815,7 +815,7 @@ wait_for_down(C) ->
 
 save_event(#cstate{latest_cmd = Cmd, events = Events} = C, Op, Data) ->
     log(C, "~p \"~s\"\n", [Op, lux_utils:to_string(Data)]),
-    [{Cmd#cmd.lineno, Op, Data} | Events].
+    [{Cmd#cmd.pos, Op, Data} | Events].
 
 safe_send_after(State, Timeout, Pid, Msg) ->
     case multiply(State, Timeout) of
@@ -834,7 +834,7 @@ multiply(#cstate{multiplier = Factor}, Timeout) ->
 log(#cstate{progress = Progress, log_fun = LogFun, event_log_fd = Fd,
             name = Name, latest_cmd = Cmd}, Format, Args) ->
     lux_utils:safe_format(Progress, LogFun, Fd, "~s(~p): " ++ Format,
-                               [Name, Cmd#cmd.lineno | Args]).
+                          [Name, Cmd#cmd.pos | Args]).
 
 expand_vars(#cstate{submatches   = SubMatches,
                     macro_dict   = MacroDict,

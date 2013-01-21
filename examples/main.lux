@@ -1,3 +1,5 @@
+[doc Example of include files and macros]
+
 [include outer.luxinc]
 
 [shell demo2]

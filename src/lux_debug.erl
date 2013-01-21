@@ -37,7 +37,7 @@ start_link(I) ->
     Parent = self(),
     spawn_link(fun() -> init(I, Parent) end).
 
-init(I, Ipid) ->
+init(I, IntPid) ->
     CmdState = undefined,
     NewCmdState =
         case I#istate.debug_file of
@@ -45,11 +45,11 @@ init(I, Ipid) ->
                 CmdState;
             DebugFile ->
                 LoadCmd = "load " ++ DebugFile,
-                call(Ipid, LoadCmd, CmdState)
+                call(IntPid, LoadCmd, CmdState)
         end,
-    loop(I, Ipid, "help", NewCmdState, 1).
+    loop(I, IntPid, "help", NewCmdState, 1).
 
-loop(I, Ipid, PrevCmd, CmdState, N) ->
+loop(I, IntPid, PrevCmd, CmdState, N) ->
     case io:get_line("") of
         eof when N =:= 1 ->
             %% Closed already at startup
@@ -67,74 +67,74 @@ loop(I, Ipid, PrevCmd, CmdState, N) ->
             case string:tokens(Cmd, " ") of
                 [] when Cmd =:= "" ->
                     %% Repeat previous command
-                    NewCmdState = call(Ipid, PrevCmd, CmdState),
-                    loop(I, Ipid, PrevCmd, NewCmdState, N+1);
+                    NewCmdState = call(IntPid, PrevCmd, CmdState),
+                    loop(I, IntPid, PrevCmd, NewCmdState, N+1);
                 [] ->
                     %% Ignore empty command
-                    loop(I, Ipid, Cmd, CmdState, N+1);
+                    loop(I, IntPid, Cmd, CmdState, N+1);
                 _ ->
                     %% Execute new command
-                    NewCmdState = call(Ipid, Cmd, CmdState),
-                    loop(I, Ipid, Cmd, NewCmdState, N+1)
+                    NewCmdState = call(IntPid, Cmd, CmdState),
+                    loop(I, IntPid, Cmd, NewCmdState, N+1)
             end
     end.
 
-call(Ipid, CmdStr, CmdState) ->
+call(IntPid, CmdStr, CmdState) ->
     %% io:format("DEBUG: ~p\n", [CmdStr]),
-    Ipid ! {debug_call, self(), CmdStr, CmdState},
+    IntPid ! {debug_call,self(),CmdStr, CmdState},
     receive
-        {debug_call, Ipid, NewCmdState} -> NewCmdState
+        {debug_reply,IntPid,NewCmdState} -> NewCmdState
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Parse and evaluate one command
 
-eval_cmd(I, Dpid, CmdStr, CmdState) ->
-    {CmdState2, I2} = do_eval_cmd(I, CmdStr, CmdState),
-    Dpid ! {debug_call, self(), CmdState2},
+eval_cmd(I, ReplyTo, CmdStr, CmdState) ->
+    {CmdState2,I2} = do_eval_cmd(I, CmdStr, CmdState),
+    ReplyTo ! {debug_reply,self(),CmdState2},
     I2.
 
 do_eval_cmd(I, CmdStr, CmdState) ->
     [CmdName | Args] = string:tokens(CmdStr, " "),
     case select(CmdName) of
-        {ok, #debug_cmd{name = _Name, params = Params, callback = Fun}} ->
-            case parse_params(Params, Args, [], []) of
-                {ok, Args2} ->
+        {ok, #debug_cmd{name=_Name, params=Params, callback=Fun}} ->
+            case parse_params(I, Params, Args, [], []) of
+                {ok,Args2} ->
                     %% io:format("Eval: ~s ~p\n", [_Name, Args2]),
                     Fun(I, Args2, CmdState);
-                {error, ReasonStr} ->
-                    io:format("\nERROR: ~s: ~s", [CmdName, ReasonStr]),
-                    {CmdState, I}
+                {error,ReasonStr} ->
+                    io:format("\nERROR: ~s: ~s\n", [CmdName, ReasonStr]),
+                    {CmdState,I}
             end;
-                {error, ReasonStr} ->
+        {error,ReasonStr} ->
             io:format("\nERROR: ~s", [ReasonStr]),
-            {CmdState, I}
+            {CmdState,I}
     end.
 
 select(CmdStr) ->
-    NamedCmds = [{C#debug_cmd.name, C} || C <- cmds()],
+    NamedCmds = [{C#debug_cmd.name,C} || C <- cmds()],
     do_select(CmdStr, NamedCmds, CmdStr, NamedCmds).
 
 do_select([H | T], NamedCmds, Orig, Prev) ->
     case select_first(H, NamedCmds, []) of
         [] ->
-            {error,  ambiguous(Orig, Prev)};
-        [{_, Cmd}] ->
+            {error, ambiguous(Orig, Prev)};
+        [{_,Cmd}] ->
             case lists:prefix(Orig, Cmd#debug_cmd.name) of
                 true ->
-                    {ok, Cmd};
+                    {ok,Cmd};
                 false ->
-                    {error,  ambiguous(Orig, Prev)}
+                    {error,ambiguous(Orig, Prev)}
             end;
         Ambiguous ->
             do_select(T, Ambiguous, Orig, NamedCmds)
     end;
-do_select([], [{_, Cmd}], _Orig, _Prev) ->
-    {ok, Cmd};
+do_select([], [{_,Cmd}], _Orig, _Prev) ->
+    {ok,Cmd};
 do_select([], [], Orig, Prev) ->
-    {error, ambiguous(Orig, Prev)};
+    {error,ambiguous(Orig, Prev)};
 do_select([], Ambiguous, Orig, _Prev) ->
-    {error,  ambiguous(Orig, Ambiguous)}.
+    {error,ambiguous(Orig, Ambiguous)}.
 
 select_first(Char, [{[Char | Chars], Cmd} | NamedCmds], Acc) ->
     select_first(Char, NamedCmds, [{Chars, Cmd} | Acc]);
@@ -154,12 +154,12 @@ ambiguous(Orig, NamedCmds) ->
     lists:flatten(["Available commands: ", Orig, "\n",
                    "-------------------\n", DeepList]).
 
-parse_params([#debug_param{name = Name,type = Type} | Params],
+parse_params(I, [#debug_param{name=Name,type=Type} | Params],
              [Arg | Args], Acc, _Bad) ->
 
     try
-        Val = parse_param(Type, Arg),
-        parse_params(Params, Args, [{Name, Val} | Acc], [])
+        Val = parse_param(I, Type, Arg),
+        parse_params(I, Params, Args, [{Name,Val} | Acc], [])
     catch
         error:_ ->
             Type2 =
@@ -168,10 +168,10 @@ parse_params([#debug_param{name = Name,type = Type} | Params],
                     true          -> atom_to_list(element(1, Type))
                 end,
             ReasonStr = lists:flatten(["Bad type of parameter ", Name,
-                                       ". Expected ", Type2]),
+                                       ". Expected ", Type2, "\n"]),
             {error, ReasonStr}
     end;
-parse_params(Params, [], Acc, Bad) ->
+parse_params(_I, Params, [], Acc, Bad) ->
     case [P || P <- Params, P#debug_param.presence =/= optional] of
         [] ->
             {ok, lists:reverse(Acc)};
@@ -182,35 +182,31 @@ parse_params(Params, [], Acc, Bad) ->
                         [pretty_param(P, Longest) || P <- All]],
             {error, lists:flatten(DeepList)}
     end;
-parse_params([], [Arg | _], _Acc, Bad) ->
+parse_params(_I, [], [Arg | _], _Acc, Bad) ->
     Longest = longest(Bad),
     DeepList = ["Value ", Arg, " has the wrong type.\nPossible parameters:\n",
                 [pretty_param(P, Longest) || P <- Bad]],
-    {error, lists:flatten(DeepList)}.
+    {error,lists:flatten(DeepList)}.
 
-parse_param(Type, Val) ->
+parse_param(I, Type, Val) ->
     case Type of
         lineno when is_list(Val) ->
-            Parse =
-                fun(Raw) ->
-                        case string:tokens(Raw, "@") of
-                            [LineNo, File] ->
-                                {lux_utils:filename_split(File),
-                                 parse_param({integer, 1, infinity}, LineNo)};
-                            [_] ->
-                                try
-                                    %% lineno
-                                    parse_param({integer, 1, infinity}, Raw)
-                                catch
-                                    error:_ ->
-                                        %% file name
-                                        lux_utils:filename_split(Raw)
-                                end
-                        end
+            RevFile =
+                case lists:splitwith(fun(Char) -> Char =/= $@ end, Val) of
+                    {Line,[]} ->
+                        I#istate.orig_rev_file;
+                    {[],[$@|Line]} ->
+                        I#istate.orig_rev_file;
+                    {File,[$@|Line]} ->
+                        OrigDir = filename:dirname(I#istate.orig_file),
+                        lux_utils:filename_split(OrigDir, File)
                 end,
-            X = lists:reverse(lists:map(Parse, string:tokens(Val, ":"))),
-            %% io:format("lineno: ~p\n", [X]),
-            X;
+            ParseInt =
+                fun(Str) -> parse_param(I, {integer,1,infinity}, Str) end,
+            ParseBreakPos =
+                fun(L) -> lists:map(ParseInt, string:tokens(L, ":")) end,
+            #lineno{rev_file=RevFile,
+                    rev_pos=lists:reverse(ParseBreakPos(Line))};
         string when is_list(Val) ->
             Val;
         {enum, List} when is_list(List) ->
@@ -224,28 +220,28 @@ parse_param(Type, Val) ->
             list_to_existing_atom(Val);
         integer ->
             list_to_integer(Val);
-        {integer, _Min, infinity} when Val =:= "infinity" ->
+        {integer,_Min,infinity} when Val =:= "infinity" ->
             999999;
-        {integer, Min, infinity} ->
+        {integer,Min,infinity} ->
             Int = list_to_integer(Val),
             if
                 Int >= Min -> Int
             end;
-        {integer, Min, Max} ->
+        {integer,Min,Max} ->
             Int = list_to_integer(Val),
             if
                 Int >= Min, Int =< Max -> Int
             end;
         float ->
             list_to_float(Val);
-        {float, _Min, infinity} when Val =:= "infinity" ->
+        {float,_Min,infinity} when Val =:= "infinity" ->
             999999.0;
-        {float, Min, infinity} ->
+        {float,Min,infinity} ->
             Float = list_to_float(Val),
             if
                 Float >= Min -> Float
             end;
-        {float, Min, Max} ->
+        {float,Min,Max} ->
             Float = list_to_float(Val),
             if
                 Float >= Min, Float =< Max -> Float
@@ -261,60 +257,60 @@ parse_param(Type, Val) ->
 
 cmds() ->
     [
-     #debug_cmd{name = "attach",
-                params = [],
-                help = "attach to script and pause its execution",
-                callback = fun cmd_attach/3},
-     #debug_cmd{name = "break",
-                params = [#debug_param{name = "lineno",
-                                       type = lineno,
-                                       presence = optional,
-                                       help = "lineno in source file"},
-                          #debug_param{name = "duration",
-                                       type = {enum, ["normal",
-                                                      "temporary",
-                                                      "delete"]},
-                                       presence = optional,
-                                       help = "controls the duration of "
-                                       "the breakpoint"}],
-                help = "set, delete and list breakpoints\n\n"
+     #debug_cmd{name="attach",
+                params=[],
+                help="attach to script and pause its execution",
+                callback=fun cmd_attach/3},
+     #debug_cmd{name="break",
+                params=[#debug_param{name="lineno",
+                                     type=lineno,
+                                     presence=optional,
+                                     help="lineno in source file"},
+                        #debug_param{name="duration",
+                                     type={enum, ["normal",
+                                                  "temporary",
+                                                  "delete"]},
+                                     presence=optional,
+                                     help="controls the duration of "
+                                     "the breakpoint"}],
+                help="set, delete and list breakpoints\n\n"
                 "When a breakpoint is set it may either be normal (default)\n"
                 "or temporary. The difference between them is that normal\n"
                 "breakpoints remains after break while temporary breakpoints\n"
                 "are automatically deleted when they have been used once.\n\n"
                 "delete means that the breakpoint immediately is removed\n"
                 "Without parameters, all breakpoints are listed.\n",
-                callback = fun cmd_break/3},
-     #debug_cmd{name = "continue",
-                params = [#debug_param{name = "lineno",
-                                       type = lineno,
-                                       presence = optional,
-                                       help = "run to temporary breakpoint"
-                                       " at lineno"}],
-                help = "continue script execution",
-                callback = fun cmd_continue/3},
-     #debug_cmd{name = "help",
-                params = [#debug_param{name = "command",
-                                       type = string,
-                                       presence = optional,
-                                       help = "debugger command"}],
-                help = "display description of a command",
-                callback = fun cmd_help/3},
-     #debug_cmd{name = "tail",
-                params = [#debug_param{name = "index",
-                                       type = {integer, 1, infinity},
-                                       presence = optional,
-                                       help = "log number"},
-                          #debug_param{name = "format",
-                                       type = {enum, ["compact", "verbose"]},
-                                       presence = optional,
-                                       help = "display format"},
-                          #debug_param{name = "n_lines",
-                                       type = {integer, 1, infinity},
-                                       presence = optional,
-                                       help = "fixed number of lines"}],
+                callback=fun cmd_break/3},
+     #debug_cmd{name="continue",
+                params=[#debug_param{name="lineno",
+                                     type=lineno,
+                                     presence=optional,
+                                     help="run to temporary breakpoint"
+                                     " at lineno"}],
+                help="continue script execution",
+                callback=fun cmd_continue/3},
+     #debug_cmd{name="help",
+                params=[#debug_param{name="command",
+                                     type=string,
+                                     presence=optional,
+                                     help="debugger command"}],
+                help="display description of a command",
+                callback=fun cmd_help/3},
+     #debug_cmd{name="tail",
+                params=[#debug_param{name="index",
+                                     type={integer, 1, infinity},
+                                     presence=optional,
+                                     help="log number"},
+                        #debug_param{name="format",
+                                     type={enum, ["compact", "verbose"]},
+                                     presence=optional,
+                                     help="display format"},
+                        #debug_param{name="n_lines",
+                                     type={integer, 1, infinity},
+                                     presence=optional,
+                                     help="fixed number of lines"}],
 
-                help = "display log files\n\n"
+                help="display log files\n\n"
                 "With no argument, the names of the log files will be listed.\n"
                 "Each one is preceeded by its index number and optionally a\n"
                 "star. Star means that the log has been updated since the\n"
@@ -323,160 +319,194 @@ cmds() ->
                 "display more lines. n_lines can be used to override that\n"
                 "behavior andonly display a fixed number of lines regardless\n"
                 "of the command is repeated or not.",
-                callback = fun cmd_tail/3},
-     #debug_cmd{name = "list",
-                params = [#debug_param{name = "n_lines",
-                                       type = {integer, 1, infinity},
-                                       presence = optional,
-                                       help = "number of lines"},
-                          #debug_param{name = "lineno",
-                                       type = lineno,
-                                       presence = optional,
-                                       help = "start listing at lineno"}],
-                help = "list script source\n\n"
+                callback=fun cmd_tail/3},
+     #debug_cmd{name="list",
+                params=[#debug_param{name="depth",
+                                     type={enum, ["local", "include", "macro"]},
+                                     presence=optional,
+                                     help="depth of listing.\n"
+                                     "local < include < macro"},
+                        #debug_param{name="n_lines",
+                                     type={integer, 1, infinity},
+                                     presence=optional,
+                                     help="number of lines"},
+                        #debug_param{name="lineno",
+                                     type=lineno,
+                                     presence=optional,
+                                     help="start listing at lineno"}],
+                help="list script source\n\n"
                 "If no \"lineno\" is given, the listing will start from the\n"
                 "current line or from the latest given \"lineno\" if no other\n"
-                "commands have been given in between.",
-                callback = fun cmd_list/3},
-     #debug_cmd{name = "load",
-                params = [#debug_param{name = "file",
-                                       type = string,
-                                       presence = optional,
-                                       help = "file name. Default is "
-                                       "\"lux.debug\"."}],
-                help = "load file with debug commands",
-                callback = fun cmd_load/3},
-     #debug_cmd{name = "next",
-                params = [#debug_param{name = "n_commands",
-                                       type = {integer, 1, infinity},
-                                       presence = optional,
-                                       help = "number of commands"}],
-                help = "execute one or more commands. "
+                "commands have been given in between. \"depth\" controls the\n"
+                "depth of the listing. \"local\" only provides listing of the\n"
+                "local file. \"include\" does also include commands in\n"
+                "include files. \"macro\" provides the full listing,\n"
+                "including commands in invoked macros and commands in\n"
+                "include files. \"macro\" is default.",
+                callback=fun cmd_list/3},
+     #debug_cmd{name="load",
+                params=[#debug_param{name="file",
+                                     type=string,
+                                     presence=optional,
+                                     help="file name. Default is "
+                                     "\"lux.debug\"."}],
+                help="load file with debug commands",
+                callback=fun cmd_load/3},
+     #debug_cmd{name="next",
+                params=[#debug_param{name="n_commands",
+                                     type={integer, 1, infinity},
+                                     presence=optional,
+                                     help="number of commands"}],
+                help="execute one or more commands. "
                 "A multiline command counts as one command.",
-                callback = fun cmd_next/3},
-     #debug_cmd{name = "progress",
-                params = [#debug_param{name = "level",
-                                       type = {enum, ["silent", "brief", "doc",
-                                                      "compact", "verbose"]},
-                                       presence = optional,
-                                       help = "verbosity level. "
-                                       "Toggles between brief and "
-                                       "verbose by default."}],
-                help = "set verbosity level of progress",
-                callback = fun cmd_progress/3},
-     #debug_cmd{name = "quit",
-                params = [],
-                help = "exit lux in a controlled manner. "
-                "Runs cleanup if applicable. ",
-                callback = fun cmd_quit/3},
-     #debug_cmd{name = "save",
-                params = [#debug_param{name = "file",
-                                       type = string,
-                                       presence = optional,
-                                       help = "file name. Default is "
-                                       "\"lux.debug\"."}],
-                help = "save debug state to file",
-                callback = fun cmd_save/3},
-     #debug_cmd{name = "skip",
-                params = [#debug_param{name = "n_commands",
-                                       type = {integer, 1, infinity},
-                                       presence = optional,
-                                       help = "number of commands"}],
-                help = "skip execution of one or more commands. "
+                callback=fun cmd_next/3},
+     #debug_cmd{name="progress",
+                params=[#debug_param{name="level",
+                                     type={enum, ["silent", "brief", "doc",
+                                                  "compact", "verbose"]},
+                                     presence=optional,
+                                     help="verbosity level. "
+                                     "Toggles between brief and "
+                                     "verbose by default."}],
+                help="set verbosity level of progress info",
+                callback=fun cmd_progress/3},
+     #debug_cmd{name="quit",
+                params=[],
+                help="exit lux in a controlled manner. "
+                "Runs cleanup if applicable.",
+                callback=fun cmd_quit/3},
+     #debug_cmd{name="save",
+                params=[#debug_param{name="file",
+                                     type=string,
+                                     presence=optional,
+                                     help="file name. Default is "
+                                     "\"lux.debug\"."}],
+                help="save debug state to file",
+                callback=fun cmd_save/3},
+     #debug_cmd{name="skip",
+                params=[#debug_param{name="n_commands",
+                                     type={integer, 1, infinity},
+                                     presence=optional,
+                                     help="number of commands"}],
+                help="skip execution of one or more commands. "
                 "A multiline command counts as one command.",
-                callback = fun cmd_skip/3}
+                callback=fun cmd_skip/3}
     ].
 
-intro_help() ->
+help_intro() ->
     ""
-        "Debugger for Lux scripts\n"
-        "========================\n"
-        "When `lux` is started with the `--debug` option, the debugger\n"
-        "will attach to the script before its execution has started. An\n"
-        "optional file with saved commands may be processed at this stage.\n"
-        "The debugger can also be attached to the script in the middle of\n"
-        "the execution by entering the command \"attach\" (or an abbreviation\n"
-        "of the command) and pressing the enter key.\n"
-        "\n"
-        "Several parameters has a lineno as parameter see `help lineno`.\n"
-        "\n"
-        "Blank command lines implies that the previous command is repeated.\n"
-        "If no command has been entered yet, the command `help` is assumed.\n"
-        "\n"
-        "Commands may be abbreviated. Use the help command (for example\n"
-        "`help help` to get more detailed descriptions of the commands.\n\n".
-
-lineno_help() ->
+    "Debugger for Lux scripts\n"
+    "========================\n"
+    "When `lux` is started with the `--debug` option, the debugger\n"
+    "will attach to the script before its execution has started. An\n"
+    "optional file with saved commands may be processed at this stage.\n"
+    "The debugger can also be attached to the script in the middle of\n"
+    "the execution by entering the command \"attach\" (or an abbreviation\n"
+    "of the command) and pressing the enter key.\n"
     "\n"
-        "lineno parameter\n"
-        "----------------\n"
-        "Several commands has a lineno as parameter. It is a string which\n"
-        "is divided in several components. The components are separated\n"
-        "with a colon and are used to refer to line numbers in include\n"
-        "files and macros. Each component may either be a line number,\n"
-        "an (possibly abbreviated) file name or a combination of both\n"
-        "separated with an at-sign (int@file).\n"
-        "\n"
-        "Assume that there is a file called main, which includes a file\n"
-        "called outer at line 4 and the file outer includes a file called\n"
-        "inner at line 12.\n"
-        "\n"
-        "Here are a few examples of how lineno can be used:\n"
-        "\n"
-        "* 3       - line 3 in file main\n"
-        "* main    - first line in file main\n"
-        "* 3@m     - line 3 in file main\n"
-        "* inner   - any line in file inner\n"
-        "* outer:i - any line in file inner if it is directly\n"
-        "            included from outer\n"
-        "* 12@o:i  - any line in file inner if it is directly\n"
-        "            included from outer on line 12\n"
-        "* 4:12:6  - line 6 in file inner if it is included\n"
-        "            on line 12 in outer and outer is included\n"
-        "            on line 4 in main.\n\n".
+    "Several parameters has a lineno as parameter see `help lineno`.\n"
+    "\n"
+    "Blank command lines implies that the previous command is repeated.\n"
+    "If no command has been entered yet, the command `help` is assumed.\n"
+    "\n"
+    "Commands may be abbreviated. Use the help command (for example\n"
+    "`help help` to get more detailed descriptions of the commands.\n\n".
+
+help_lineno() ->
+    "\n"
+    "lineno parameter\n"
+    "----------------\n"
+    "Several commands has a lineno as parameter. It is a string which\n"
+    "starts with an optional file component and is followed by a\n"
+    "mandatory sequence of numbers. The file is separated from the\n"
+    "numbers by an at-sign (file@) and the numbers are separated from\n"
+    "each others by a colon (3:12:6). If the file component is omitted\n"
+    "the main script file is assumed.\n"
+    "\n"
+    "Assume the following files:\n"
+    "\n"
+    "  --- main.lux ---\n"
+    "    1: [doc Example of include files and macros]\n"
+    "    2:\n"
+    "    3:     [include outer.luxinc]\n"
+    "    4:\n"
+    "    5: [shell demo]\n"
+    "    6:     [invoke first]\n"
+    "\n"
+    "  --- outer.luxinc ---\n"
+    "    1: [include inner.luxinc]\n"
+    "\n"
+    "  --- inner.luxinc ---\n"
+    "    1: [macro first]\n"
+    "    2:     [invoke second]\n"
+    "    3: [endmacro]\n"
+    "    4:\n"
+    "    5: [macro second]\n"
+    "    6:     !echo hello\n"
+    "    7: [endmacro]\n"
+    "    8:\n"
+    "    9: [shell demo]\n"
+    "   10:     !echo world\n"
+    "   11:     ?echo world\n"
+    "   12:     ?world\n"
+    "\n"
+    "Here are a few examples of how lineno can be used:\n"
+    "\n"
+    "main.lux@3  - line 3 in file main.lux\n"
+    "3           - same as main.lux@3\n"
+    "inner@9     - line 9 in file inner.lux\n"
+    "inner@6     - line 6 in (the second macro in) file inner.lux\n"
+    "main@3:2:6  - on line 4 main.lux invokes the first macro, which\n"
+    "              on line 2 invokes the second macro which has a line 6\n"
+    "3:2:6       - same as main.lux@3:2:6\n"
+    "main@1:1:10 - on line 1 main.lux includes outer.luxinc, which\n"
+    "              on line 1 includes inner.lux which has a line 10\n"
+    "1:1:10      - same as main.lux@1:1:10\n".
 
 markdown() ->
-    Intro = intro_help(),
-    {error, Ambiguous} = select(""),
-    LineNo = lineno_help(),
+    Intro = help_intro(),
+    {error,Ambiguous} = select(""),
+    LineNo = help_lineno(),
     Cmds = lists:flatten([["\n", pretty_cmd(Cmd)] || Cmd <- cmds()]),
     io:format("~s\n", [Intro]),
-    io:format("~s\n", [Ambiguous]),
+    io:format("~s", [Ambiguous]),
     io:format("~s\n", [LineNo]),
     io:format("~s\n", [Cmds]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 cmd_attach(I, _, CmdState) ->
-    CurrentFullLineNo = current_full_lineno(I),
+    Current = current_call_stack(I),
     ListOpts =
         case CmdState of
-            {attach, next} ->
-                BreakPos = full_lineno_to_break_pos(CurrentFullLineNo),
-                [{"n_lines", 1}, {"lineno", BreakPos}];
+            {attach,next} ->
+                LineNo = lux_utils:call_stack_to_lineno(Current),
+                [{"n_lines",1}, {"lineno",LineNo}];
             _ ->
                 io:format("\nBreak at ~s\n",
-                          [pretty_break_pos(CurrentFullLineNo)]),
-                [{RevFile, LineNo} | InclStack] = CurrentFullLineNo,
-                LineNo2 =
+                          [lux_utils:pretty_lineno(I, Current)]),
+                [{RevFile,Pos} | ParentCallStack] = Current,
+                Pos2 =
                     if
-                        LineNo > 3 ->
-                            TmpLineNo = LineNo-2,
-                            case is_valid_lineno(RevFile, TmpLineNo, I) of
-                                false -> LineNo;
-                                true  -> TmpLineNo
+                        Pos > 3 ->
+                            %% Display 2 extra lines before actual lineno
+                            TmpPos = Pos-2,
+                            case callers(I, RevFile, TmpPos, macro) of
+                                []       -> Pos; % No cmd at that line
+                                _Callers -> TmpPos
                             end;
                         true->
-                            LineNo
+                            Pos
                     end,
-                FullLineNo = [{RevFile, LineNo2} | InclStack],
-                BreakPos2 = full_lineno_to_break_pos(FullLineNo),
-                [{"n_lines", 10}, {"lineno", BreakPos2}]
+                CallStack = [{RevFile,Pos2} | ParentCallStack],
+                LineNo2 = lux_utils:call_stack_to_lineno(CallStack),
+                [{"n_lines",10}, {"lineno",LineNo2}]
         end,
-    case opt_block(I) of
-        {false, I2} ->
-            {undefined, I2};
-        {true, I2} ->
+    {Blocked,I2} = opt_block(I),
+    case Blocked of
+        false ->
+            {undefined,I2};
+        true ->
             io:format("\n",[]),
             cmd_list(I2, ListOpts, CmdState)
     end.
@@ -484,78 +514,67 @@ cmd_attach(I, _, CmdState) ->
 opt_block(I) ->
     if
         I#istate.blocked ->
-            {false, I};
+            {false,I};
         true ->
-            lists:foreach(fun(#shell{pid = Pid}) -> Pid ! {block, self()} end,
+            lists:foreach(fun(#shell{pid=Pid}) -> Pid ! {block,self()} end,
                           I#istate.shells),
-            {true, I#istate{blocked = true,
-                            has_been_blocked = true,
-                            want_more = false,
-                            old_want_more = I#istate.want_more}}
+            {true,
+             I#istate{blocked=true,
+                      has_been_blocked=true,
+                      want_more=false,
+                      old_want_more=I#istate.want_more}}
     end.
-
-is_valid_lineno(File,
-                LineNo,
-                #istate{orig_file = OrigFile, orig_commands = OrigCmds}) ->
-    Fun = fun(#cmd{lineno = L}, F, _InclStack, Acc) ->
-                  if
-                      F =:= File, L =:= LineNo -> true;
-                      true                     -> Acc
-                  end
-          end,
-    lux_utils:foldl_cmds(Fun, false, OrigFile, [], OrigCmds).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 cmd_break(I, Args, _CmdState) ->
-    I2 =
+    {_Res, I2} =
         case Args of
-            [{"lineno", BreakPos}, {"duration", Duration}] ->
+            [{"lineno", LineNo}, {"duration", Duration}] ->
                 case Duration of
                     "temporary"  ->
-                        add_break(I, BreakPos, temporary);
+                        add_break(I, LineNo, temporary);
                     "next"  ->
-                        add_break(I, BreakPos, next);
+                        add_break(I, LineNo, next);
                     "normal"  ->
-                        add_break(I, BreakPos, enabled);
+                        add_break(I, LineNo, enabled);
                     "delete"  ->
                         Breaks = I#istate.breakpoints,
-                        PrettyPos = pretty_break_pos(BreakPos),
-                        case lists:keyfind(BreakPos, #break.pos, Breaks) of
+                        PrettyLineNo = lux_utils:pretty_lineno(I, LineNo),
+                        case lists:keyfind(LineNo, #break.lineno, Breaks) of
                             false ->
                                 io:format("\nNo breakpoint at: ~s\n",
-                                          [PrettyPos]),
-                                I;
+                                          [PrettyLineNo]),
+                                {added, I};
                             Break ->
                                 io:format("\nDelete breakpoint at: ~s\n",
-                                          [PrettyPos]),
+                                          [PrettyLineNo]),
                                 Breaks2 = delete_break(Break, Breaks),
-                                I#istate{breakpoints = Breaks2}
+                                {added, I#istate{breakpoints = Breaks2}}
                         end
                 end;
-            [{"lineno", BreakPos}] ->
+            [{"lineno", LineNo}] ->
                 %% Normal breakpoint
-                add_break(I, BreakPos, enabled);
+                add_break(I, LineNo, enabled);
             [] ->
                 %% List Breakpoints
                 Print =
-                    fun(#break{pos = Pos, type = T}) ->
-                            Pretty = pretty_break_pos(Pos),
-                            case T of
-                                temporary ->
-                                    io:format("  ~s\ttemporary\n", [Pretty]);
-                                next ->
-                                    io:format("  ~s\tnext\n", [Pretty]);
-                                enabled ->
-                                    io:format("  ~s\n", [Pretty]);
-                                disabled ->
-                                    io:format("  ~s\n", [Pretty])
-                            end
+                    fun(#break{lineno=LineNo, type=T}) ->
+                            Format =
+                                case T of
+                                    temporary -> "  ~s\ttemporary\n";
+                                    next      -> "  ~s\tnext\n";
+                                    enabled   -> "  ~s\n";
+                                    disabled  -> "  ~s\n"
+                                end,
+                            PrettyLineNo = lux_utils:pretty_lineno(I, LineNo),
+                            io:format(Format, [PrettyLineNo])
                     end,
                 case I#istate.commands of
                     [#cmd{} | _] ->
+                        Current = current_call_stack(I),
                         io:format("\nCurrent line: ~s\n",
-                                  [pretty_break_pos(current_full_lineno(I))]);
+                                  [lux_utils:pretty_lineno(I, Current)]);
                     [] ->
                         ok
                 end,
@@ -566,127 +585,87 @@ cmd_break(I, Args, _CmdState) ->
                         io:format("\nBreakpoints:\n", []),
                         lists:foreach(Print, Breaks)
                 end,
-                I
+                {added,I}
         end,
-    {undefined, I2}.
+    {undefined,I2}.
 
-add_break(I, BreakPos, Type) ->
+add_break(I, LineNo, Type) ->
     %% Search for matching command
-    case break_to_full_lineno(I, BreakPos) of
-        false ->
-            PrettyBreakPos = pretty_break_pos(BreakPos),
-            io:format("\nERROR: No such lineno: ~p\n", [PrettyBreakPos]),
-            I;
-        FullLineNo ->
-            PrettyBreakPos = pretty_break_pos(FullLineNo),
+    case callers(I, LineNo, macro) of
+        [] ->
+            PrettyLineNo = lux_utils:pretty_lineno(I, LineNo),
+            io:format("\nERROR: No such lineno: ~p\n", [PrettyLineNo]),
+            {not_added,I};
+        CallStacks -> % May be ambiguous
+            PrettyLineNo = lux_utils:pretty_lineno(I, LineNo),
             case Type of
                 temporary ->
                     io:format("\nSet temporary breakpoint at ~s\n",
-                              [PrettyBreakPos]);
+                              [PrettyLineNo]);
                 next ->
                     ok;
                 _ ->
                     io:format("\nSet breakpoint at ~s\n",
-                              [PrettyBreakPos])
+                              [PrettyLineNo])
             end,
-            NewBreak = #break{pos = BreakPos, type = Type},
+            RevFile = LineNo#lineno.rev_file,
+            RevPos = LineNo#lineno.rev_pos,
+            CallStacks2 = [[{RevFile,RevPos}|CS] || CS <- CallStacks],
+            NewBreak = #break{lineno=LineNo,
+                              type=Type,
+                              call_stacks=CallStacks2},
             Breaks = replace_break(NewBreak, I#istate.breakpoints),
-            I#istate{breakpoints = Breaks}
+            {added,I#istate{breakpoints=Breaks}}
     end.
 
 replace_break(NewBreak, Breaks) ->
     Breaks2 = delete_break(NewBreak, Breaks),
-    lists:keysort(#break.pos, [NewBreak | Breaks2]).
+    lists:keysort(#break.lineno, [NewBreak|Breaks2]).
 
 delete_break(Break, Breaks) ->
-    lists:keydelete(Break#break.pos, #break.pos, Breaks).
+    lists:keydelete(Break#break.lineno, #break.lineno, Breaks).
 
-check_break(I, LineNo) ->
+check_break(I, Pos) ->
     Breaks = I#istate.breakpoints,
-    case lookup_break(I, LineNo, Breaks) of
-        false ->
-            {true, I};
-        Break ->
+    case find_breaks(I, Pos) of
+        [] ->
+            {true,I};
+        [Break|_AmbigBreaks] ->
             Type = Break#break.type,
-            CmdState = {attach, Type},
-                    case Type of
-                        temporary ->
-                            %% Temporary breakpoint - remove it
-                            {_, I2} = cmd_attach(I, [], CmdState),
-                            Breaks2 = delete_break(Break, Breaks),
-                            {false, I2#istate{breakpoints = Breaks2}};
-                        next ->
-                            %% Temporary breakpoint - remove it
-                            {_, I2} = cmd_attach(I, [], CmdState),
-                            Breaks2 = delete_break(Break, Breaks),
-                            {false, I2#istate{breakpoints = Breaks2}};
-                        enabled ->
-                            %% Normal breakpoint
-                            %% Disable it to not get stuck when we continue
-                            {_, I2} = cmd_attach(I, [], CmdState),
-                            NewBreak = Break#break{type = disabled},
-                            Breaks2 = replace_break(NewBreak, Breaks),
-                            {false, I2#istate{breakpoints = Breaks2}};
-                        disabled ->
-                            %% Normal breakpoint
-                            %% Enable it again for later reuse
-                            NewBreak = Break#break{type = enabled},
-                            Breaks2 = replace_break(NewBreak, Breaks),
-                            {true, I#istate{breakpoints = Breaks2}}
-                    end
+            CmdState = {attach,Type},
+            Breaks = I#istate.breakpoints,
+            case Type of
+                temporary ->
+                    %% Temporary breakpoint - remove it
+                    {_,I2} = cmd_attach(I, [], CmdState),
+                    Breaks2 = delete_break(Break, Breaks),
+                    {false,I2#istate{breakpoints=Breaks2}};
+                next ->
+                    %% Temporary breakpoint - remove it
+                    {_,I2} = cmd_attach(I, [], CmdState),
+                    Breaks2 = delete_break(Break, Breaks),
+                    {false,I2#istate{breakpoints=Breaks2}};
+                enabled ->
+                    %% Normal breakpoint
+                    %% Disable it to not get stuck when we continue
+                    {_,I2} = cmd_attach(I, [], CmdState),
+                    NewBreak = Break#break{type=disabled},
+                    Breaks2 = replace_break(NewBreak, Breaks),
+                    {false,I2#istate{breakpoints=Breaks2}};
+                disabled ->
+                    %% Normal breakpoint
+                    %% Enable it again for later reuse
+                    NewBreak = Break#break{type = enabled},
+                    Breaks2 = replace_break(NewBreak, Breaks),
+                    {true,I#istate{breakpoints=Breaks2}}
+            end
     end.
 
-lookup_break(I, LineNo, Breaks) when is_integer(LineNo) ->
-    RevFile = lux_utils:filename_split(I#istate.file), %  optimize later
-    FullLineNo = [{RevFile, LineNo} | I#istate.incl_stack],
-    lookup_break(I, FullLineNo, Breaks);
-lookup_break(I, FullLineNo, [Break | Breaks]) when is_list(FullLineNo) ->
-    case match_break(FullLineNo, Break#break.pos) of
-        true  -> Break;
-        false -> lookup_break(I, FullLineNo, Breaks)
-    end;
-lookup_break(_I, _FullLineNo, []) ->
-    false.
-
-%% BreakPos :: [non_neg_integer() | [string()] | {[string(), non_neg_integer()}
-match_break([{RevFile, LineNo} | FullLineNo], [BreakPos | Break]) ->
-    case match_break2(RevFile, LineNo, BreakPos) of
-        true  -> match_break(FullLineNo, Break);
-        false -> false
-    end;
-match_break(_Curr, []) ->
-    true;
-match_break([], _Break) ->
-    false.
-
-match_break2(_RevFile, LineNo, BreakLineNo)
-  when is_integer(BreakLineNo) ->
-    LineNo =:= BreakLineNo;
-match_break2(RevFile, LineNo, {BreakFile, BreakLineNo})
-  when is_integer(BreakLineNo) ->
-    case LineNo =:= BreakLineNo of
-        true  -> match_break2(RevFile, LineNo, BreakFile);
-        false -> false
-    end;
-match_break2([FileComp | RevFile], LineNo, [BreakComp | BreakFile]) ->
-    case match_break3(FileComp, BreakComp) of
-        true  -> match_break2(RevFile, LineNo, BreakFile);
-        false -> false
-    end;
-match_break2(_RevFile, _LineNo, []) ->
-    true;
-match_break2([], _LineNo, _BreakFile) ->
-    false.
-
-match_break3([FileChar | FileComp], [BreakChar | BreakComp]) ->
-    case FileChar =:= BreakChar of
-        true  -> match_break3(FileComp, BreakComp);
-        false -> false
-    end;
-match_break3(_FileComp, []) ->
-    true;
-match_break3([], _BreakComp) ->
-    false.
+find_breaks(I, Pos) ->
+    Current = [{I#istate.rev_file,Pos} | I#istate.call_stack],
+    Filter = fun(Break) -> lists:member(Current, Break#break.call_stacks) end,
+    Breaks = I#istate.breakpoints,
+    lists:filter(Filter, Breaks).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -694,63 +673,70 @@ cmd_continue(I, Args, _CmdState) ->
     do_continue(I, Args, _CmdState, temporary).
 
 do_continue(I, Args, _CmdState, Type) ->
-    I2 =
+    {Res, I2} =
         case Args of
-            [{"lineno", BreakPos}] ->
+            [{"lineno",BreakPos}] ->
                 add_break(I, BreakPos, Type);
             [] ->
-                I
+                {added,I}
         end,
-    case Type of
-        next ->
-            ok;
-        _ ->
-            io:format("\nContinue to run from ~s\n",
-                      [pretty_break_pos(current_full_lineno(I))])
-    end,
-    case opt_unblock(I2) of
-        {false, I3} ->
-            {undefined, I3};
-        {true, I3} ->
-            I4 = lux_interpret:opt_dispatch_cmd(I3),
-            {undefined, I4}
+    case Res of
+        added ->
+            case Type of
+                next ->
+                    ok;
+                _ ->
+                    Current = current_call_stack(I),
+                    io:format("\nContinue to run from ~s\n",
+                              [lux_utils:pretty_lineno(I, Current)])
+            end,
+            {Blocked,I3} = opt_unblock(I2),
+            case Blocked of
+                false ->
+                    {undefined,I3};
+                true ->
+                    I4 = lux_interpret:opt_dispatch_cmd(I3),
+                    {undefined, I4}
+            end;
+        not_added ->
+            {undefined,I2}
     end.
 
 opt_unblock(I) ->
     if
         not I#istate.blocked ->
-            {false, I};
+            {false,I};
         I#istate.blocked, I#istate.old_want_more =/= undefined ->
-            lists:foreach(fun(#shell{pid = P}) -> P ! {unblock, self()} end,
+            lists:foreach(fun(#shell{pid=P}) -> P ! {unblock,self()} end,
                           I#istate.shells),
-            {true, I#istate{blocked = false,
-                            want_more = I#istate.old_want_more,
-                            old_want_more = undefined}}
+            {true, I#istate{blocked=false,
+                            want_more=I#istate.old_want_more,
+                            old_want_more=undefined}}
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 cmd_help(I, [], CmdState) ->
     {error, Ambiguous} = select(""),
-    io:format("\n~s~s", [intro_help(), Ambiguous]),
-    {CmdState, I};
-cmd_help(I, [{_, "lineno"}], CmdState) ->
-    io:format("~s", [lineno_help()]),
-    {CmdState, I};
-cmd_help(I, [{_, CmdName}], CmdState) ->
+    io:format("\n~s~s", [help_intro(), Ambiguous]),
+    {CmdState,I};
+cmd_help(I, [{_,"lineno"}], CmdState) ->
+    io:format("~s", [help_lineno()]),
+    {CmdState,I};
+cmd_help(I, [{_,CmdName}], CmdState) ->
     case select(CmdName) of
         {ok, Cmd} ->
             Pretty = lists:flatten(pretty_cmd(Cmd)),
             io:format("\n~s\n", [Pretty]),
             {CmdState, I};
-        {error, ReasonStr} ->
+        {error,ReasonStr} ->
             io:format("\nERROR: ~s", [ReasonStr]),
-            {CmdState, I}
+            {CmdState,I}
     end.
 
-pretty_cmd(#debug_cmd{name = Name, params = Params, help = Help}) ->
+pretty_cmd(#debug_cmd{name=Name, params=Params, help=Help}) ->
     Longest = longest(Params),
-    Fun = fun(#debug_param{name = N, presence = Pres}) ->
+    Fun = fun(#debug_param{name=N, presence=Pres}) ->
                   case Pres of
                       optional  -> [" [", N, "]"];
                       mandatory -> [" ", N]
@@ -771,7 +757,7 @@ pretty_cmd(#debug_cmd{name = Name, params = Params, help = Help}) ->
      end
     ].
 
-pretty_param(#debug_param{name = Name, type = Type, help = Help}, Longest) ->
+pretty_param(#debug_param{name=Name, type=Type, help=Help}, Longest) ->
     PrettyType =
         case Type of
             binary ->
@@ -805,9 +791,9 @@ longest(Elems) ->
 
 longest2([H | T], Longest) ->
     case H of
-        {_Name, #debug_cmd{name = Str}} -> ok;
-        #debug_cmd{name = Str} -> ok;
-        #debug_param{name = Str} -> ok;
+        {_Name, #debug_cmd{name=Str}} -> ok;
+        #debug_cmd{name=Str} -> ok;
+        #debug_param{name=Str} -> ok;
         Str when is_list(Str) -> ok
     end,
     longest2(T, lists:max([Longest, length(Str)]));
@@ -823,13 +809,13 @@ cmd_tail(#istate{log_dir=LogDir, tail_status=Status} = I, [], CmdState) ->
     Logs = all_logs(I),
     Print = fun(Abs, Index) ->
                     Rel = lux_utils:drop_prefix(LogDir, Abs),
-                    {Curr, Display} =
+                    {Curr,Display} =
                         case file:read_file_info(Abs) of
                             {ok, #file_info{size=Size}} ->
                                 {Size, ""};
                             {error, Reason} ->
-                                Str = file:format_error(Reason),
-                                {Reason, ": " ++ Str}
+                                FileStr = file:format_error(Reason),
+                                io:format("~s: ~s\n", [Reason, FileStr])
                         end,
                     Prefix =
                         case lists:keyfind(Abs, 1, Status) of
@@ -841,18 +827,18 @@ cmd_tail(#istate{log_dir=LogDir, tail_status=Status} = I, [], CmdState) ->
                                 "*"
                         end,
                     io:format("~s~3w ~s~s\n", [Prefix, Index, Rel, Display]),
-                    {{Abs, Curr}, Index+1}
+                    {{Abs,Curr}, Index+1}
             end,
     {Status2, _} = lists:mapfoldl(Print, 1, Logs),
     io:format("\n", []),
-    TailOpts = [{"index", 2}, {"format", "compact"}, {"n_lines", 10}],
+    TailOpts = [{"index",2}, {"format","compact"}, {"n_lines",10}],
     _ = cmd_tail(I, TailOpts, CmdState),
     {undefined, I#istate{tail_status=Status2}};
-cmd_tail(I, [{"index", Index} | Rest], CmdState) ->
+cmd_tail(I, [{"index",Index} | Rest], CmdState) ->
     case Rest of
-        [{"format", Format} | Rest2] ->
+        [{"format",Format} | Rest2] ->
             case Rest2 of
-                [{"n_lines", UserN}] ->
+                [{"n_lines",UserN}] ->
                     ok;
                 [] ->
                     UserN = undefined
@@ -867,7 +853,7 @@ cmd_tail(I, [{"index", Index} | Rest], CmdState) ->
             io:format("ERROR: ~p is not a valid log index."
                       " Must be within ~p..~p.\n",
                       [Index, 1, length(Logs)]),
-            {CmdState, I};
+            {CmdState,I};
         LogFile ->
             tail(I, LogFile, CmdState, Format, UserN)
     end.
@@ -904,8 +890,8 @@ tail(#istate{log_dir=LogDir} = I, AbsFile, CmdState, Format, UserN) ->
             io:format("Last ~p (~p..~p) lines of log file: ~s\n\n",
                       [Actual, Max-Actual+1, Max, RelFile]),
             [tail_format(Format, "~s\n", [Row]) || Row <- TailRows],
-            {{debug_tail, AbsFile, N}, I};
-        {error, FileReason}->
+            {{debug_tail,AbsFile,N}, I};
+        {error,FileReason}->
             FileStr = file:format_error(FileReason),
             io:format("ERROR: ~s: ~s\n", [RelFile, FileStr]),
             {undefined, I}
@@ -920,113 +906,138 @@ tail_format("verbose", Format, Data) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 cmd_list(I, Args, CmdState) ->
-    CurrentFullLineNo = current_full_lineno(I),
+    Current = current_call_stack(I),
     case CmdState of
-        {debug_list, OldN, OldRevFile, OldLineNo} ->
+        {debug_list,OldDepth,OldN,OldLineNo,OldCount} ->
             ok;
         _ ->
-            [{OldRevFile, OldLineNo} | _] = CurrentFullLineNo,
-            OldN = 10
+            OldDepth = macro,
+            OldN = 10,
+            OldLineNo = lux_utils:call_stack_to_lineno(Current),
+            OldCount = 0
     end,
-    case Args of
-        [{"lineno", BreakPos}] ->
-            N = OldN,
-            case break_to_full_lineno(I, BreakPos) of
-                false ->
-                    io:format("\nERROR: No such lineno: ~p\n",
-                              [pretty_break_pos(BreakPos)]),
-                    {undefined, I};
-                [{RevFile, First} | _] ->
-                    do_list(I, RevFile, First, N, CurrentFullLineNo)
-            end;
-        [{"n_lines", N0}, {"lineno", BreakPos}] ->
-            case break_to_full_lineno(I, BreakPos) of
-                false ->
-                    io:format("\nERROR: No such lineno: ~p\n",
-                              [pretty_break_pos(BreakPos)]),
-                    {undefined, I};
-                [{RevFile, First0} | _] ->
-                    if
-                        N0 < 0 ->
-                            N = abs(N0),
-                            First = First0 - N,
-                            do_list(I, RevFile, First, N, CurrentFullLineNo);
-                        true ->
-                            N = N0,
-                            First = First0,
-                            do_list(I, RevFile, First, N, CurrentFullLineNo)
-                    end
-            end;
-        [{"n_lines", N0}] ->
-            if
-                N0 < 0 ->
-                    N = abs(N0),
-                    First = OldLineNo - N,
-                    do_list(I, OldRevFile, First, N, CurrentFullLineNo);
-                true ->
-                    N = N0,
-                    First = OldLineNo,
-                    do_list(I, OldRevFile, First, N, CurrentFullLineNo)
-            end;
+    {Depth, N, LineNo, Count} =
+        pick_list_args(Args, OldDepth, OldN, OldLineNo, OldCount),
+    case callers(I, LineNo, Depth) of
         [] ->
-            N = OldN,
-            First = OldLineNo,
-            do_list(I, OldRevFile, First, N, CurrentFullLineNo)
+            io:format("\nERROR: No such lineno: ~p\n",
+                      [lux_utils:pretty_lineno(I, LineNo)]),
+            {undefined,I};
+        [CallStack|_] ->
+            %% Possibly ambiguous. Just pick one call stack.
+            RevFile = LineNo#lineno.rev_file,
+            Pos = lists:last(LineNo#lineno.rev_pos),
+            do_list2(I, LineNo, N, Count, Current, RevFile, Pos, 
+                     CallStack, Depth)
     end.
 
-do_list(I, RevFile, First, N, [{CurrRevFile, CurrLineNo} | _]) ->
-    Last = First+N-1,
-    %% io:format("List source lines ~p..~p of file ~s\n",
-    %%          [First, Last, pretty_file(RevFile)]),
-    Print = fun(#cmd{lineno = LineNo, raw = Text}, RF, _IS, Count) ->
-                    if
-                        RF =:= RevFile, LineNo >= First, LineNo =< Last ->
-                            Delim =
-                                if
-                                    RevFile =:= CurrRevFile,
-                                    LineNo =:= CurrLineNo ->
-                                        ">";
-                                    true ->
-                                        ":"
-                                end,
-                            io:format("~p~s ~s\n", [LineNo, Delim, Text]),
-                            Count+1;
-                        true ->
-                            Count
-                    end
-            end,
-    _Count =
-        lux_utils:foldl_cmds(Print,
-                                  0,
-                                  I#istate.orig_file,
-                                  [],
-                                  I#istate.orig_commands),
-    {{debug_list, N, RevFile, Last+1}, I}.
+pick_list_args([], Depth, N, LineNo, Count) ->
+    {Depth, N, LineNo, Count};
+pick_list_args([Arg|Args], Depth, N, LineNo, _Count) ->
+    case Arg of
+        {"depth",NewDepth} ->
+            pick_list_args(Args, list_to_atom(NewDepth), N, LineNo, 0);
+        {"n_lines",NewN} ->
+            pick_list_args(Args, Depth, NewN, LineNo, 0);
+        {"lineno",NewLineNo} ->
+            pick_list_args(Args, Depth, N, NewLineNo, 0)
+    end.
+
+do_list2(I, LineNo, N, Skip, Current, RevFile, FirstPos,
+         ParentCallStack, Depth) ->
+    Print =
+        fun(#cmd{rev_file=RF, pos=Pos}=Cmd,
+            PCS,
+            searching_for_first=Acc) ->
+                if
+                    RF =:= RevFile, Pos =:= FirstPos, PCS =:= ParentCallStack,
+                    Skip =< 0 ->
+                        %% Found first line
+                        print_line(Cmd, ParentCallStack, Current),
+                        {printing, 1, 1};
+                    RF =:= RevFile, Pos =:= FirstPos, PCS =:= ParentCallStack,
+                    Skip > 0 ->
+                        %% Found first line, skipping
+                        CountAcc = 1,
+                        {skipping, CountAcc, Skip};
+                    true ->
+                        %% Still searching
+                        Acc
+                end;
+           (Cmd, PCS, {skipping, CountAcc, SkipAcc}) ->
+                if
+                    CountAcc < SkipAcc ->
+                        %% Still skipping
+                        {skipping, CountAcc+1, SkipAcc};
+                    true ->
+                        %% Start printing
+                        print_line( Cmd, PCS, Current),
+                        {printing, 1, SkipAcc+1}
+                end;
+           (Cmd, PCS, {printing, CountAcc, SkipAcc}) ->
+                if
+                    CountAcc < N ->
+                        %% Still printing
+                        print_line(Cmd, PCS, Current),
+                        {printing, CountAcc+1, SkipAcc+1};
+                    true ->
+                        %% Printing done
+                        {printing_done, SkipAcc}
+                end;
+           (_Cmd, _PCF, {printing_done, _SkipAcc}=Acc) ->
+                Acc
+        end,
+    case lux_utils:foldl_cmds(I, Print, searching_for_first, [], Depth) of
+        searching_for_first ->
+            io:format("\nERROR: No such lineno: ~p\n",
+                      [lux_utils:pretty_lineno(I, LineNo)]),
+            {undefined,I};
+        {skipping, _CountAcc, _SkipAcc} ->
+            %% Skipped enough for this iteration
+            {undefined,I};
+        {printing, _CountAcc, _SkipAcc} ->
+            %% Printed last line
+            {undefined,I};
+        {printing_done, SkipAcc} ->
+            %% Printed enough for this iteration
+            {{debug_list,Depth,N,LineNo,SkipAcc},I}
+    end.
+
+print_line(#cmd{rev_file=RF, pos=Pos, raw=Text}, ParentCallStack, Current) ->
+    CallStack = [{RF,Pos} | ParentCallStack],
+    Delim =
+        if
+            CallStack =:= Current -> ">";
+            true                  -> ":"
+        end,
+    CallStack = [{RF,Pos} | ParentCallStack],
+    PrettyLineNo = lux_utils:pretty_call_stack(CallStack),
+    io:format("~s~s ~s\n", [PrettyLineNo, Delim, Text]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 cmd_load(I, Args, CmdState) ->
     case Args of
-        [{"file", File}] ->
+        [{"file",File}] ->
             ok;
         [] ->
             File = "lux.debug"
     end,
     case file:read_file(File) of
-        {ok, Bin} ->
+        {ok,Bin} ->
             io:format("\nLoad commands from file: ~s\n", [File]),
-            Fun = fun(CmdStr, {CS, IS, LineNo}) ->
-                          io:format("~p: ~s\n", [LineNo, CmdStr]),
-                          {CS2, IS2} = do_eval_cmd(IS, CmdStr, CS),
-                          {CS2, IS2, LineNo+1}
+            Fun = fun(CmdStr, {CS,IS,Pos}) ->
+                          io:format("~p: ~s\n", [Pos, CmdStr]),
+                          {CS2,IS2} = do_eval_cmd(IS, CmdStr, CS),
+                          {CS2,IS2,Pos+1}
                   end,
             Lines = string:tokens(binary_to_list(Bin), "\n"),
-            {_CmdState, I2, _} = lists:foldl(Fun, {CmdState, I, 1}, Lines),
-            {undefined, I2};
-        {error, Reason} ->
+            {_CmdState,I2,_} = lists:foldl(Fun, {CmdState,I,1}, Lines),
+            {undefined,I2};
+        {error,Reason} ->
             io:format("\nERROR: Cannot read from file ~p: ~s\n",
                       [File, file:format_error(Reason)]),
-            {undefined, I}
+            {undefined,I}
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -1041,16 +1052,17 @@ cmd_next(I, Args, CmdState) ->
     case catch lists:nth(N+1, I#istate.commands) of
         {'EXIT', _} ->
             do_continue(I, [], CmdState, next);
-        #cmd{lineno = LineNo} ->
-            BreakPos = [{lux_utils:filename_split(I#istate.file), LineNo}],
-            do_continue(I, [{"lineno", BreakPos}], CmdState, next)
+        #cmd{rev_file=RevFile, pos=Pos} ->
+            CallStack = [{RevFile, Pos} | I#istate.call_stack],
+            LineNo = lux_utils:call_stack_to_lineno(CallStack),
+            do_continue(I, [{"lineno", LineNo}], CmdState, next)
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 cmd_progress(I, Args, CmdState) ->
     case Args of
-        [{"level", Level0}] ->
+        [{"level",Level0}] ->
             Level = list_to_atom(Level0);
         [] ->
             Level =
@@ -1062,9 +1074,9 @@ cmd_progress(I, Args, CmdState) ->
                     silent  -> verbose
                 end
     end,
-    lists:foreach(fun(#shell{pid = Pid}) -> Pid ! {progress, self(), Level} end,
+    lists:foreach(fun(#shell{pid=Pid}) -> Pid ! {progress, self(), Level} end,
                   I#istate.shells),
-    {CmdState, I#istate{progress = Level}}.
+    {CmdState, I#istate{progress=Level}}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -1079,15 +1091,15 @@ cmd_quit(I, _Args, _CmdState) ->
 
 cmd_save(I, Args, _CmdState) ->
     case Args of
-        [{"file", File}] ->
+        [{"file",File}] ->
             ok;
         [] ->
             File = "lux.debug"
     end,
     Save =
-        fun(#break{pos = BreakPos, type = Type}) ->
+        fun(#break{lineno=LineNo, type=Type}) ->
                 [
-                 "break ", pretty_break_pos(BreakPos),
+                 "break ", lux_utils:pretty_lineno(I, LineNo),
                  case Type of
                      enabled   -> "";
                      temporary -> " temporary";
@@ -1111,7 +1123,7 @@ cmd_save(I, Args, _CmdState) ->
 
 cmd_skip(I, Args, _CmdState) ->
     case Args of
-        [{"n_commands", N}] ->
+        [{"n_commands",N}] ->
             ok;
         [] ->
             N = 1
@@ -1120,73 +1132,74 @@ cmd_skip(I, Args, _CmdState) ->
     case Skipped of
         [] ->
             io:format("\nNo more lines to skip.\n", []);
-        [#cmd{lineno = Single}] ->
-            io:format("\nSkipped line ~p.\n", [Single]);
-        [Last | Rest] ->
+        [#cmd{pos=Pos}] ->
+            io:format("\nSkipped line ~p.\n", [Pos]);
+        [Last|Rest] ->
             First = lists:last(Rest),
             io:format("\nSkipped lines ~p..~p.\n", [First, Last])
     end,
     I2 = I#istate{commands = Cmds},
     {undefined, I2}.
 
-skip_cmds(N, [Cmd | Cmds], Skipped) when N > 0 ->
-    skip_cmds(N-1, Cmds, [Cmd | Skipped]);
+skip_cmds(N, [Cmd|Cmds], Skipped) when N > 0 ->
+    skip_cmds(N-1, Cmds, [Cmd|Skipped]);
 skip_cmds(0, Cmds, Skipped) ->
     {Skipped, Cmds}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-current_full_lineno(I) ->
-    LineNo =
+current_call_stack(I) ->
+    Current =
         case I#istate.commands of
-            [] -> 1;
-            [#cmd{lineno = CurrentLineNo} | _] -> CurrentLineNo
+            [] ->
+                {I#istate.orig_rev_file,1};
+            [#cmd{rev_file=RevFile, pos=Pos} | _] ->
+                {RevFile, Pos}
         end,
-    RevFile = lux_utils:filename_split(I#istate.file),
-    [{RevFile, LineNo} | I#istate.incl_stack].
+    [Current|I#istate.call_stack].
 
-full_lineno_to_break_pos(FullLineNo) ->
-    [LineNo || {_File, LineNo} <- FullLineNo].
+%% Returns list of valid parent call stacks
+callers(I, RevFile, Pos, Depth) ->
+    RevDir = lux_utils:filename_split(filename:dirname(I#istate.orig_file)),
+    Fun = fun(#cmd{rev_file=RF, pos=P}, CallStack, Acc) ->
+                  {Short, Long} = skip_common_parent(RevDir, RevFile, RF),
+                  case match_prefix(Short, Long) of
+                      true when P =:= Pos ->
+                          CallStack2 = [{RF,P}|CallStack],
+                          [CallStack2|Acc];
+                      _ ->
+                          Acc
+                  end
+          end,
+    lux_utils:foldl_cmds(I, Fun, [], [], Depth).
 
-break_to_full_lineno(I, BreakPos) ->
-    Collect = fun(#cmd{lineno = LineNo}, RevFile, InclStack, Acc) ->
-                      FullLineNo = [{RevFile, LineNo} | InclStack],
-                      case match_break(FullLineNo, BreakPos) of
-                          true  -> [FullLineNo | Acc];
-                          false -> Acc
-                      end
-              end,
-    Matching = lux_utils:foldl_cmds(Collect,
-                                         [],
-                                         I#istate.orig_file,
-                                         [],
-                                         I#istate.orig_commands),
-    case catch lists:last(Matching) of
-        {'EXIT', _} -> false;
-        FullLineNo  -> FullLineNo
+skip_common_parent([Common|Parent], [Common|Short], [Common|Long]) ->
+    skip_common_parent(Parent, Short, Long);
+skip_common_parent(_Parent, Short, Long) ->
+    {Short, Long}.
+
+match_prefix([ShortComp|Short], [LongComp|Long]) ->
+    lists:prefix(ShortComp, LongComp) andalso
+        match_prefix(Short, Long);
+match_prefix([], _Long) ->
+    true;
+match_prefix(_Short, _Long) ->
+    false.
+
+%% Returns list of valid parent call stacks
+callers(I, #lineno{rev_file=RevFile, rev_pos=RevPos}, Depth) ->
+    TopPos = lists:last(RevPos),
+    case callers(I, RevFile, TopPos, Depth) of
+        [] ->
+            [];
+        CallStacks ->
+            [CS || CS <- CallStacks,
+                   equal_call_stack([{RevFile,TopPos}|CS], RevPos)]
     end.
 
-pretty_break_pos(BreakPos) ->
-    do_pretty_break_pos(BreakPos, []).
-
-do_pretty_break_pos([LineNo | BreakPos], Acc) when is_integer(LineNo) ->
-    do_pretty_break_pos(BreakPos,
-                        [integer_to_list(LineNo), opt_delim(Acc) | Acc]);
-do_pretty_break_pos([RevFile | BreakPos], Acc) when is_list(RevFile) ->
-    do_pretty_break_pos(BreakPos, [pretty_file(RevFile), opt_delim(Acc) | Acc]);
-do_pretty_break_pos([{RevFile, LineNo} | BreakPos], Acc)
-  when is_list(RevFile), is_integer(LineNo) ->
-    do_pretty_break_pos(BreakPos,
-                        [[integer_to_list(LineNo), "@", pretty_file(RevFile)],
-                         opt_delim(Acc) | Acc]);
-do_pretty_break_pos([], Acc) ->
-    lists:flatten(lists:reverse(Acc)).
-
-opt_delim(Acc) ->
-    case Acc of
-        [] -> "";
-        _  -> ":"
-    end.
-
-pretty_file(RevFile) ->
-    filename:join(lists:reverse(RevFile)).
+equal_call_stack([{_RevFile, Pos}|CallStack], [Pos|RevPos]) ->
+    equal_call_stack(CallStack, RevPos);
+equal_call_stack([], []) ->
+    true;
+equal_call_stack(_CallStack, _RevPos) ->
+    false.
