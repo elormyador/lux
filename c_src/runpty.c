@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 Sebastian Strollo
+ * Copyright 2012-2013 Sebastian Strollo
  *
  * Run a program in the slave end of a pseudo tty. Used to run our
  * interactive tests with.

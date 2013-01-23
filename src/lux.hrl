@@ -1,5 +1,5 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Copyright (c) 2012 Hakan Mattsson
+%% Copyright (c) 2012-2013 Hakan Mattsson
 %%
 %% See the file "LICENSE" for information on usage and redistribution
 %% of this file, and for a DISCLAIMER OF ALL WARRANTIES.

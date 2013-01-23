@@ -1,6 +1,6 @@
 Lux - LUcid eXpect scripting
 ============================
-Version 1.2 - 2012-12-12
+Version 1.2 - 2013-01-23
 
 * [Introduction](#../README)
 * [Concepts](#main_concepts)
@@ -821,39 +821,59 @@ Available commands:
 * list     - list script source
 * load     - load file with debug commands
 * next     - execute one or more commands. A multiline command counts as one command.
-* progress - set verbosity level of progress
-* quit     - exit lux in a controlled manner. Runs cleanup if applicable. 
+* progress - set verbosity level of progress info
+* quit     - exit lux in a controlled manner. Runs cleanup if applicable.
 * save     - save debug state to file
 * skip     - skip execution of one or more commands. A multiline command counts as one command.
-
 
 lineno parameter
 ----------------
 Several commands has a lineno as parameter. It is a string which
-is divided in several components. The components are separated
-with a colon and are used to refer to line numbers in include
-files and macros. Each component may either be a line number,
-an (possibly abbreviated) file name or a combination of both
-separated with an at-sign (int@file).
+starts with an optional file component and is followed by a
+mandatory sequence of numbers. The file is separated from the
+numbers by an at-sign (file@) and the numbers are separated from
+each others by a colon (3:12:6). If the file component is omitted
+the main script file is assumed.
 
-Assume that there is a file called main, which includes a file
-called outer at line 4 and the file outer includes a file called
-inner at line 12.
+Assume the following files:
+
+  --- main.lux ---
+    1: [doc Example of include files and macros]
+    2:
+    3:     [include outer.luxinc]
+    4:
+    5: [shell demo]
+    6:     [invoke first]
+
+  --- outer.luxinc ---
+    1: [include inner.luxinc]
+
+  --- inner.luxinc ---
+    1: [macro first]
+    2:     [invoke second]
+    3: [endmacro]
+    4:
+    5: [macro second]
+    6:     !echo hello
+    7: [endmacro]
+    8:
+    9: [shell demo]
+   10:     !echo world
+   11:     ?echo world
+   12:     ?world
 
 Here are a few examples of how lineno can be used:
 
-* 3       - line 3 in file main
-* main    - first line in file main
-* 3@m     - line 3 in file main
-* inner   - any line in file inner
-* outer:i - any line in file inner if it is directly
-            included from outer
-* 12@o:i  - any line in file inner if it is directly
-            included from outer on line 12
-* 4:12:6  - line 6 in file inner if it is included
-            on line 12 in outer and outer is included
-            on line 4 in main.
-
+main.lux@3  - line 3 in file main.lux
+3           - same as main.lux@3
+inner@9     - line 9 in file inner.lux
+inner@6     - line 6 in (the second macro in) file inner.lux
+main@3:2:6  - on line 4 main.lux invokes the first macro, which
+              on line 2 invokes the second macro which has a line 6
+3:2:6       - same as main.lux@3:2:6
+main@1:1:10 - on line 1 main.lux includes outer.luxinc, which
+              on line 1 includes inner.lux which has a line 10
+1:1:10      - same as main.lux@1:1:10
 
 
 attach
@@ -923,17 +943,24 @@ of the command is repeated or not.
 * format  - display format; enum(compact|verbose)  
 * n_lines - fixed number of lines; 1 >= integer =< infinity  
 
-list [n_lines] [lineno]
------------------------
+list [depth] [n_lines] [lineno]
+-------------------------------
 
 list script source
 
 If no "lineno" is given, the listing will start from the
 current line or from the latest given "lineno" if no other
-commands have been given in between.
+commands have been given in between. "depth" controls the
+depth of the listing. "local" only provides listing of the
+local file. "include" does also include commands in
+include files. "macro" provides the full listing,
+including commands in invoked macros and commands in
+include files. "macro" is default.
 
 **Parameters:**  
 
+* depth   - depth of listing.
+local < include < macro; enum(local|include|macro)  
 * n_lines - number of lines; 1 >= integer =< infinity  
 * lineno  - start listing at lineno; lineno  
 
@@ -958,7 +985,7 @@ execute one or more commands. A multiline command counts as one command.
 progress [level]
 ----------------
 
-set verbosity level of progress
+set verbosity level of progress info
 
 **Parameters:**  
 
@@ -967,7 +994,7 @@ set verbosity level of progress
 quit
 ----
 
-exit lux in a controlled manner. Runs cleanup if applicable. 
+exit lux in a controlled manner. Runs cleanup if applicable.
 
 **Parameters:**  
 

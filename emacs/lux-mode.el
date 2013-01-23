@@ -1,4 +1,4 @@
-;; Copyright (c) 2012 Martin Bjorklund
+;; Copyright (c) 2012-2013 Martin Bjorklund
 
 ;; Major mode for editing lux files
 ;; Make sure lux-mode.el is found in your elisp path, and
