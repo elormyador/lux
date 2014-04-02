@@ -51,7 +51,7 @@ run(Files, Opts) when is_list(Files) ->
     case parse_ropts(Opts, #rstate{files = Files}) of
         {ok, R, _LogDir} when R#rstate.mode =:= list; R#rstate.mode =:= doc ->
             R2 = R#rstate{log_fd = undefined, summary_log = undefined},
-            R3 = parse_config(R2),
+            {_ConfigData, R3} = parse_config(R2),
             {R4, Summary, Results} =
                 run_suites(R3, R3#rstate.files, success, []),
             print_results(R4, Summary, Results);
@@ -84,7 +84,10 @@ do_run(R, SummaryLog) ->
             TimerRef = start_timer(R),
             try
                 R2 = R#rstate{log_fd = SummaryFd, summary_log = SummaryLog},
-                R4 = parse_config(R2),
+                {ConfigData, R4} = parse_config(R2),
+                LogDir = filename:dirname(SummaryLog),
+                ConfigLog = filename:join([LogDir, "lux_config.log"]),
+                lux_log:write_config_log(ConfigLog, ConfigData),
                 {R5, Summary, Results} =
                     run_suites(R4, R4#rstate.files, success, []),
                 print_results(R5, Summary, Results),
@@ -521,17 +524,26 @@ parse_config(R) ->
                    config_dir = ConfigDir,
                    config_file = ConfigFile,
                    config_opts = ConfigOpts},
+    ConfigData =
+        builtins(R, ActualConfigName) ++
+        [{'default file', DefaultFile}] ++ DefaultOpts ++
+        [{'config file', ConfigFile}] ++ ConfigOpts,
+    {ConfigData, R3}.
 
-    %% Log
-    log_builtins(R3, ActualConfigName),
-    rlog(R3, "~s~s\n", [?TAG("default file"), DefaultFile]),
-    [rlog(R3, "~s~p\n",
-          [?TAG(Tag), Val]) || {Tag, Val} <- DefaultOpts],
-    rlog(R3, "~s~s\n",
-         [?TAG("config file"), ConfigFile]),
-    [rlog(R3, "~s~p\n",
-          [?TAG(Tag), Val]) || {Tag, Val} <- ConfigOpts],
-    R3.
+builtins(R, ActualConfigName) ->
+    {ok, Cwd} = file:get_cwd(),
+    [
+     {'start time', lux_utils:now_to_string(R#rstate.start_time)},
+     {hostname, hostname()},
+     {architecture, ActualConfigName},
+     {'system info', sys_info()},
+     {suite, R#rstate.suite},
+     {run, R#rstate.run},
+     {revision, R#rstate.revision},
+     {workdir, Cwd},
+     {'config name', R#rstate.config_name},
+     {config_dir, R#rstate.config_dir}
+    ].
 
 config_name() ->
     case string:tokens(os:cmd("uname -sm; echo $?"), "\n ") of
@@ -566,31 +578,6 @@ parse_config_file(R, ConfigFile) ->
             end,
             []
     end.
-
-log_builtins(R, ActualConfigName) ->
-    rlog(R, "\n~s~s\n",
-         [?TAG("start time"),
-          lux_utils:now_to_string(R#rstate.start_time)]),
-    rlog(R, "~s~s\n",
-         [?TAG("hostname"), hostname()]),
-    rlog(R, "~s~s\n",
-         [?TAG("architecture"), ActualConfigName]),
-    rlog(R, "~s~s\n",
-         [?TAG("system info"), sys_info()]),
-    rlog(R, "~s~s\n",
-         [?TAG("suite"), R#rstate.suite]),
-    rlog(R, "~s~s\n",
-         [?TAG("run"), R#rstate.run]),
-    rlog(R, "~s~s\n",
-         [?TAG("revision"), R#rstate.revision]),
-    {ok, Cwd} = file:get_cwd(),
-    rlog(R, "~s~s\n",
-         [?TAG("workdir"), Cwd]),
-    rlog(R, "~s~s\n",
-         [?TAG("config name"), R#rstate.config_name]),
-    rlog(R, "~s~s\n",
-         [?TAG("config_dir"), R#rstate.config_dir]).
-
 
 config_file(ConfigDir, UserConfigName, ActualConfigName) ->
     Ext = ".luxcfg",

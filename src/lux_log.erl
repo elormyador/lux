@@ -9,6 +9,7 @@
 
  -export([parse_summary_log/1, parse_run_summary/3,
           open_summary_log/1, close_summary_tmp_log/1, close_summary_log/2,
+          write_config_log/2,
           print_results/4,
           safe_format/3, safe_write/2, double_write/2,
           open_event_log/5, close_event_log/1, write_event/4, scan_events/1,
@@ -119,8 +120,11 @@
                 LogBin/binary>>} ->
              %% Latest version
              Sections = binary:split(LogBin, <<"\n\n">>, [global]),
-             [ArchConfig | Rest] = Sections,
-             [Result | Rest2] = lists:reverse(Rest),
+             LogDir = filename:dirname(SummaryLog),
+             ConfigLog = filename:join([LogDir, "lux_config.log"]),
+             {ok, RawConfig} = scan_config(ConfigLog),
+             ArchConfig = parse_config(RawConfig),
+             [Result | Rest2] = lists:reverse(Sections),
              Result2 = split_result(Result),
              {Groups, EventLogs} = split_groups(Rest2, [], []),
              {ok, FI} = file:read_file_info(SummaryLog),
@@ -348,13 +352,21 @@ find_config(Key, Tuples, Default) ->
         {_, Hostname} -> Hostname
     end.
 
+write_config_log(ConfigLog, ConfigData) ->
+    PrettyConfig = format_config(ConfigData),
+    file:write_file(ConfigLog,
+                    [
+                     format_config([{'config log', ?CONFIG_LOG_VERSION}]),
+                     "\n",
+                     PrettyConfig
+                    ]).
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Event log
 
 open_event_log(LogDir, Script, Progress, LogFun, Verbose) ->
     Base = filename:basename(Script),
     EventLog = filename:join([LogDir, Base ++ ".event.log"]),
-    ok = filelib:ensure_dir(EventLog),
     case file:open(EventLog, [write]) of
         {ok, EventFd} ->
             safe_format(Progress, LogFun, {Verbose, EventFd},
@@ -497,6 +509,17 @@ split_lines(Bin) ->
     Normalized = lists:foldl(Replace, Bin, NLs),
     binary:split(Normalized, <<"\n">>, Opts).
 
+scan_config(ConfigLog) ->
+    case file:read_file(ConfigLog) of
+        {ok, <<"config log        : ",
+               ?CONFIG_LOG_VERSION,
+               "\n\n",
+               LogBin/binary>>} ->
+            {ok, LogBin};
+        {error, FileReason} ->
+            {error, ConfigLog, file:format_error(FileReason)}
+    end.
+
 parse_config(RawConfig) ->
     %% io:format("Config: ~p\n", [RawConfig]),
     RawConfig.
@@ -556,10 +579,9 @@ unquote(Bin) ->
 open_config_log(LogDir, Script, Config) ->
     Base = filename:basename(Script),
     ConfigFile = filename:join([LogDir, Base ++ ".config.log"]),
-    ok = filelib:ensure_dir(ConfigFile),
     case file:open(ConfigFile, [write]) of
         {ok, ConfigFd} ->
-            Data = config_data(Config),
+            Data = format_config(Config),
             ok = file:write(ConfigFd, Data),
             ok = file:write(ConfigFd, "\n"),
             ConfigFd;
@@ -583,7 +605,7 @@ close_config_log(ConfigFd, Logs) ->
     lists:foreach(ShowLog, Logs),
     file:close(ConfigFd).
 
-config_data(Config) ->
+format_config(Config) ->
     Fun =
         fun({Tag, Type, Val}) ->
                 case Type of
@@ -594,7 +616,9 @@ config_data(Config) ->
                         io_lib:format("~s~p\n", [?TAG(Tag), Val2]);
                     term ->
                         io_lib:format("~s~p\n", [?TAG(Tag), Val])
-                end
+                end;
+           ({Tag, Val}) -> % string
+                io_lib:format("~s~s\n", [?TAG(Tag), Val])
         end,
     lists:map(Fun, Config).
 
