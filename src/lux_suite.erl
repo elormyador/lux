@@ -106,10 +106,10 @@ do_run(R, SummaryLog) ->
                 end
             catch
                 throw:{error, File, ReasonStr} ->
-                    catch lux_log:close_summary_log(SummaryFd, SummaryLog),
+                    lux_log:close_summary_tmp_log(SummaryFd),
                     {error, File, ReasonStr};
                 Class:Reason ->
-                    catch lux_log:close_summary_log(SummaryFd, SummaryLog),
+                    lux_log:close_summary_tmp_log(SummaryFd),
                     ReasonStr =
                         lists:flatten(io_lib:format("~p:~p ~p",
                                                     [Class,

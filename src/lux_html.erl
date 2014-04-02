@@ -10,7 +10,7 @@
 -export([annotate_log/1, history/2]).
 -export([keysplit/2, keysplit/3]).
 
--include_lib("kernel/include/file.hrl").
+ -include("lux.hrl").
 
 -record(astate, {log_dir, log_file}).
 
@@ -56,9 +56,9 @@ safe_write_file(File, IoList) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Annotate a summary log and all its event logs
 
-annotate_summary_log(IsRecursive, #astate{log_file = SummaryLog}=A) ->
-    try lux_log:parse_summary_log(SummaryLog) of
-        {ok, AbsSummaryLog, Result, Groups, ArchConfig, _FileInfo, EventLogs} ->
+annotate_summary_log(IsRecursive, #astate{log_file=AbsSummaryLog}=A) ->
+    try lux_log:parse_summary_log(AbsSummaryLog) of
+        {ok, Result, Groups, ArchConfig, _FileInfo, EventLogs} ->
             Html = html_groups(A, AbsSummaryLog, Result, Groups, ArchConfig),
             case IsRecursive of
                 true ->
@@ -83,18 +83,18 @@ annotate_summary_log(IsRecursive, #astate{log_file = SummaryLog}=A) ->
         error:Reason2 ->
             ReasonStr =
                 lists:flatten(io_lib:format("ERROR in ~s\n~p\n\~p\n",
-                                            [SummaryLog,
+                                            [AbsSummaryLog,
                                              Reason2,
                                              erlang:get_stacktrace()])),
             io:format("~s\n", [ReasonStr]),
-            {error, SummaryLog, ReasonStr}
+            {error, AbsSummaryLog, ReasonStr}
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Return summary log as HTML
 
 html_groups(A, SummaryLog, Result, Groups, ArchConfig) ->
-    Dir = filename:basename(filename:dirname(binary_to_list(SummaryLog))),
+    Dir = filename:basename(filename:dirname(SummaryLog)),
     RelSummaryLog = drop_prefix(A, SummaryLog),
     [
      html_header(["Lux summary log (", Dir, ")"]),
@@ -565,28 +565,9 @@ html_opt_div(Op, Data) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% History
 
--define(DEFAULT_LOG, <<"unknown">>).
--define(DEFAULT_HOSTNAME, <<"unknown">>).
--define(DEFAULT_CONFIG_NAME, <<"unknown">>).
--define(DEFAULT_SUITE, <<"unknown">>).
--define(DEFAULT_RUN, <<"unknown">>).
--define(DEFAULT_REV, <<"">>).
--define(DEFAULT_TIME, <<"yyyy-mm-dd hh:mm:ss">>).
 -define(CURRENT_SUFFIX, "_current").
 -define(CONFIG_SUFFIX, "_config").
 -define(HOST_SUFFIX, "_host").
-
--record(run,
-        {id,
-         test,
-         result,
-         log,
-         start_time,
-         hostname,
-         config_name,
-         run_dir,
-         repos_rev,
-         details}).
 
 -record(table, {name, res, iolist}).
 -record(row,   {res, iolist}).
@@ -1072,7 +1053,8 @@ do_parse_summary_logs(HtmlFile, Dir, Acc, Skip) ->
                             File = filename:join([Dir, Base]),
                             io:format(".", []),
                             {Res, _EventLogs} = lux_log:parse_summary_log(File),
-                            [parse_run_summary(HtmlFile, Res) | Acc];
+                            R = lux_log:parse_run_summary(HtmlFile, File, Res),
+                            [R | Acc];
                         false ->
                             io:format("s", []),
                             %% Skip
@@ -1093,129 +1075,6 @@ do_parse_summary_logs(HtmlFile, Dir, Acc, Skip) ->
         {error, _Reason} ->
             %% Not a dir or problem to read dir
             Acc
-    end.
-
-parse_run_summary(HtmlFile,
-                  {ok, SummaryLog, SummaryRes, Groups, ArchConfig, FI}) ->
-    Split =
-        fun(Config) ->
-                case binary:split(Config, <<": ">>, []) of
-                    [Key, Val] ->
-                        {true, {lux_utils:strip_trailing_whitespaces(Key),
-                                Val}};
-                    _          ->
-                        false
-                end
-        end,
-    Config = lists:zf(Split, binary:split(ArchConfig, <<"\n">>, [global])),
-    Ctime =
-        list_to_binary(lux_utils:datetime_to_string(FI#file_info.ctime)),
-    StartTime = find_config(<<"start time">>, Config, Ctime),
-    Host = find_config(<<"hostname">>, Config, ?DEFAULT_HOSTNAME),
-    ConfigName0 = find_config(<<"architecture">>, Config, ?DEFAULT_CONFIG_NAME),
-    ConfigName =
-        if
-            ConfigName0 =/= ?DEFAULT_CONFIG_NAME,
-            ConfigName0 =/= <<"undefined">> ->
-                ConfigName0;
-            true ->
-                find_config(<<"config name">>, Config, ?DEFAULT_CONFIG_NAME)
-        end,
-    Suite = find_config(<<"suite">>, Config, ?DEFAULT_SUITE),
-    RunId = find_config(<<"run">>, Config, ?DEFAULT_RUN),
-    ReposRev = find_config(<<"revision">>, Config, ?DEFAULT_REV),
-    {ok, Cwd} = file:get_cwd(),
-    RunDir = binary_to_list(find_config(<<"workdir">>,
-                                        Config,
-                                        list_to_binary(Cwd))),
-    Cases = [parse_run_case(HtmlFile, RunDir, StartTime, Host, ConfigName,
-                            Suite, RunId, ReposRev, Case) ||
-                {test_group, _Group, Cases} <- Groups,
-                Case <- Cases],
-    HtmlDir = filename:dirname(HtmlFile),
-    #run{test = Suite,
-         id = RunId,
-         result = run_result(SummaryRes),
-         log = drop_prefix(HtmlDir, SummaryLog),
-         start_time = StartTime,
-         hostname = Host,
-         config_name = ConfigName,
-         run_dir = RunDir,
-         repos_rev = ReposRev,
-         details = Cases};
-parse_run_summary(HtmlFile, {error, SummaryLog, _ReasonStr}) ->
-    HtmlDir = filename:dirname(HtmlFile),
-    {ok, Cwd} = file:get_cwd(),
-    #run{test = ?DEFAULT_SUITE,
-         id = ?DEFAULT_RUN,
-         result = fail,
-         log = drop_prefix(HtmlDir, SummaryLog),
-         start_time = ?DEFAULT_TIME,
-         hostname = ?DEFAULT_HOSTNAME,
-         config_name = ?DEFAULT_CONFIG_NAME,
-         run_dir = Cwd,
-         repos_rev = ?DEFAULT_REV,
-         details = []}.
-
-parse_run_case(HtmlFile, RunDir, Start, Host, ConfigName,
-               Suite, RunId, ReposRev,
-               {test_case, Name, Log, _Doc, _HtmlLog, CaseRes}) ->
-    HtmlDir = filename:dirname(HtmlFile),
-    File = drop_prefix(RunDir, Name),
-    File2 = drop_some_dirs(File),
-    #run{test = <<Suite/binary, ":", File2/binary>>,
-         id = RunId,
-         result = run_result(CaseRes),
-         log = drop_prefix(HtmlDir, Log),
-         start_time = Start,
-         hostname = Host,
-         config_name = ConfigName,
-         run_dir = RunDir,
-         repos_rev = ReposRev,
-         details = []};
-parse_run_case(_HtmlFile, RunDir, Start, Host, ConfigName, Suite,
-               RunId, ReposRev,
-               {result_case, Name, Res, _Reason}) ->
-    File = drop_prefix(RunDir, Name),
-    File2 = drop_some_dirs(File),
-    #run{test = <<Suite/binary, ":", File2/binary>>,
-         id = RunId,
-         result = run_result(Res),
-         log = ?DEFAULT_LOG,
-         start_time = Start,
-         hostname = Host,
-         config_name = ConfigName,
-         run_dir = RunDir,
-         repos_rev = ReposRev,
-         details = []}.
-
-drop_some_dirs(File) when is_binary(File) -> % BUGBUG: Temporary solution
-    Q = <<"lux">>,
-    Comp = filename:split(File),
-    case lists:dropwhile(fun(E) -> E =/= Q end, Comp) of
-        [Q | Rest] -> filename:join(Rest);
-        _Rest      -> File
-    end.
-
-run_result({result, Res, _}) ->
-    run_result(Res);
-run_result({result, Res}) ->
-    run_result(Res);
-run_result(Res) ->
-    case Res of
-        success                                                -> success;
-        {fail, _Script, _LineNo, _Expected, _Actual, _Details} -> fail;
-        {error, _Reason}                                       -> fail;
-        <<"SUCCESS">>                                          -> success;
-        <<"SKIP", _/binary>>                                   -> skip;
-        <<"FAIL", _/binary>>                                   -> fail;
-        <<"ERROR", _/binary>>                                  -> fail
-    end.
-
-find_config(Key, Tuples, Default) ->
-    case lists:keyfind(Key, 1, Tuples) of
-        false         -> Default;
-        {_, Hostname} -> Hostname
     end.
 
 %% Keysort list of tuples and group items with same tag
