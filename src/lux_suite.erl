@@ -19,6 +19,7 @@
          config_dir                 :: string(),
          file_pattern = "^[^\\\.].*\\\.lux" ++ [$$] :: string(),
          log_fd                     :: file:io_device(),
+         log_dir                    :: file:filename(),
          summary_log                :: string(),
          config_name                :: string(),
          config_file                :: string(),
@@ -49,13 +50,14 @@ run([], _Opts) ->
     {error, "", FileErr};
 run(Files, Opts) when is_list(Files) ->
     case parse_ropts(Opts, #rstate{files = Files}) of
-        {ok, R, _LogDir} when R#rstate.mode =:= list; R#rstate.mode =:= doc ->
+        {ok, R} when R#rstate.mode =:= list; R#rstate.mode =:= doc ->
             R2 = R#rstate{log_fd = undefined, summary_log = undefined},
             {_ConfigData, R3} = parse_config(R2),
             {R4, Summary, Results} =
                 run_suites(R3, R3#rstate.files, success, []),
             print_results(R4, Summary, Results);
-        {ok, R, LogDir} ->
+        {ok, R} ->
+            LogDir = R#rstate.log_dir,
             SummaryLog = filename:join([LogDir, "lux_summary.log"]),
             case filelib:ensure_dir(SummaryLog) of
                 ok ->
@@ -96,7 +98,7 @@ do_run(R, SummaryLog) ->
                 SummaryPrio = lux_utils:summary_prio(Summary),
                 if
                     SummaryPrio >= HtmlPrio, R5#rstate.mode =/= list ->
-                        case lux_html:annotate_log(SummaryLog) of
+                        case lux_html:annotate_log(false, SummaryLog) of
                             ok ->
                                 io:format("\nfile://~s\n",
                                           [SummaryLog ++ ".html"]),
@@ -225,13 +227,14 @@ parse_ropts([], R) ->
     UserOpts2 = merge_opts([{log_dir, AbsLogDir}], UserOpts),
     R2 = R#rstate{start_time = Now,
                   run = Run,
+                  log_dir = AbsLogDir,
                   files = AbsFiles,
                   user_opts = UserOpts2},
     TagFiles = [{config_dir, R2#rstate.config_dir} |
                 [{file, F} || F <- RelFiles]],
     try
         lists:foreach(fun check_file/1, TagFiles),
-        {ok, R2, AbsLogDir}
+        {ok, R2}
     catch
         throw:{error, File, Reason} ->
             {error, File, Reason}
@@ -398,6 +401,18 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                             Summary = error,
                             NewSummary = lux_utils:summary(OldSummary, Summary),
                             Results2 = [Res | Results]
+                    end,
+                    HtmlPrio = lux_utils:summary_prio(R2#rstate.html),
+                    SummaryPrio = lux_utils:summary_prio(Summary),
+                    if
+                        SummaryPrio >= HtmlPrio ->
+                            Base = filename:basename(Script),
+                            LogDir = R2#rstate.log_dir,
+                            EventLog =
+                                filename:join([LogDir, Base ++ ".event.log"]),
+                            lux_html:annotate_log(false, EventLog);
+                        true ->
+                            ignore
                     end,
                     run_cases(Mode, R#rstate{warnings = AllWarnings},
                               SuiteFile, Scripts, NewSummary, Results2)

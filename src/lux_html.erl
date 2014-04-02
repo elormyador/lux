@@ -7,15 +7,12 @@
 
 -module(lux_html).
 
--export([annotate_log/1, history/2]).
+-export([annotate_log/2, history/2]).
 -export([keysplit/2, keysplit/3]).
 
  -include("lux.hrl").
 
 -record(astate, {log_dir, log_file}).
-
-annotate_log(LogFile) ->
-    annotate_log(true, LogFile).
 
 annotate_log(IsRecursive, LogFile) ->
     AbsLogFile = filename:absname(LogFile),
@@ -64,7 +61,7 @@ annotate_summary_log(IsRecursive, #astate{log_file=AbsSummaryLog}=A) ->
                 true ->
                     AnnotateEventLog =
                         fun(EventLog) ->
-                                case annotate_log(EventLog) of
+                                case annotate_log(IsRecursive, EventLog) of
                                     ok ->
                                         ok;
                                     {error, _, Reason} ->
