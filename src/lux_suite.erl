@@ -143,26 +143,18 @@ run_suites(R, [SuiteFile | SuiteFiles], Summary, Results) ->
                 run_cases(Mode, R, SuiteFile, CaseFiles, Summary, Results),
             run_suites(R2, SuiteFiles, Summary2, Results2);
         {ok, CaseFiles} ->
-            rlog(R, "\n~s~s\n",
-                 [?TAG("test group begin"), SuiteFile]),
             {R2, Summary2, Results2} =
                 run_cases(Mode, R, SuiteFile, CaseFiles, Summary, Results),
-            rlog(R2, "\n~s~s\n",
-                 [?TAG("test group end"), SuiteFile]),
             run_suites(R2, SuiteFiles, Summary2, Results2);
         {error, _Reason} when Mode =:= list ->
             run_suites(R, SuiteFiles, Summary, Results);
         {error, Reason} ->
-            rlog(R, "\n~s~s\n",
-                 [?TAG("test group begin"), SuiteFile]),
             double_rlog(R, "\n~s~s\n",
                         [?TAG("test case"), SuiteFile]),
             ListErr = double_rlog(R, "~s~s: ~s\n",
                                   [?TAG("error"),
                                    SuiteFile, file:format_error(Reason)]),
             Results2 = [{error, SuiteFile, ListErr} | Results],
-            rlog(R, "\n~s~s\n",
-                 [?TAG("test group end"), SuiteFile]),
             run_suites(R, SuiteFiles, error, Results2)
     end;
 run_suites(R, [], Summary, Results) ->
@@ -406,8 +398,8 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                     SummaryPrio = lux_utils:summary_prio(Summary),
                     if
                         SummaryPrio >= HtmlPrio ->
-                            Base = filename:basename(Script),
                             LogDir = R2#rstate.log_dir,
+                            Base = filename:basename(Script),
                             EventLog =
                                 filename:join([LogDir, Base ++ ".event.log"]),
                             lux_html:annotate_log(false, EventLog);
@@ -661,12 +653,12 @@ double_rlog(#rstate{log_fd = Fd}, Format, Args) ->
         _         -> lux_log:double_write(Fd, IoList)
     end.
 
-rlog(#rstate{log_fd = Fd}, Format, Args) ->
-    IoList = io_lib:format(Format, Args),
-    case Fd of
-       undefined -> list_to_binary(IoList);
-       _         -> lux_log:safe_write(Fd, IoList)
-   end.
+%% rlog(#rstate{log_fd = Fd}, Format, Args) ->
+%%     IoList = io_lib:format(Format, Args),
+%%     case Fd of
+%%        undefined -> list_to_binary(IoList);
+%%        _         -> lux_log:safe_write(Fd, IoList)
+%%    end.
 
 start_timer(R) ->
     SuiteTimeout = pick_val(suite_timeout, R, infinity),

@@ -143,9 +143,8 @@ html_summary_file(A, {file, File, LineNo}, Groups) ->
             [html_href("", drop_prefix(A, HtmlLog), Label), "\n"]
     end.
 
-html_groups2(A, [{test_group, Group, Cases} | Groups]) ->
+html_groups2(A, [{test_group, _Group, Cases} | Groups]) ->
     [
-     "\n\n<h2>Test group: ", drop_prefix(A, Group), "</h2>\n",
      html_cases(A, Cases),
      html_groups2(A, Groups)
     ];
@@ -160,7 +159,7 @@ html_cases(A, [{test_case, Name, EventLog, Doc, HtmlLog, Res} | Cases]) ->
     [
      html_anchor(RelFile, ""),
      "\n",
-     html_href("h3", "Test case: ", "", RelHtmlLog, RelFile),
+     html_href("h2", "Test case: ", "", RelHtmlLog, RelFile),
      "\n<div class=case><pre>",
      html_doc(Tag, Doc),
      html_href(Tag, "Raw event log: ", "", RelEventLog, RelEventLog),
