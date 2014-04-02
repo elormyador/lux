@@ -43,9 +43,9 @@
         }).
 
 run([], _Opts) ->
-    FileErr = safe_format(undefined,
-                          "ERROR: Mandatory script files are missing\n",
-                          []),
+    FileErr = lux_log:safe_format(undefined,
+                                  "ERROR: Mandatory script files are missing\n",
+                                  []),
     {error, "", FileErr};
 run(Files, Opts) when is_list(Files) ->
     case parse_ropts(Opts, #rstate{files = Files}) of
@@ -62,7 +62,7 @@ run(Files, Opts) when is_list(Files) ->
                     do_run(R, SummaryLog);
                 {error, FileReason} ->
                     FileErr =
-                        safe_format(undefined,
+                        lux_log:safe_format(undefined,
                                     "ERROR: Failed to create log directory:"
                                     " ~s -> ~s\n",
                                     [LogDir, file:format_error(FileReason)]),
@@ -70,32 +70,25 @@ run(Files, Opts) when is_list(Files) ->
             end;
         {error, {badarg, Name, Val}} ->
             ArgErr =
-                safe_format(undefined,
-                            "ERROR: ~p is an illegal argument (~p)\n",
-                            [Name, Val]),
+                lux_log:safe_format(undefined,
+                                    "ERROR: ~p is an illegal argument (~p)\n",
+                                    [Name, Val]),
             {error, hd(Files), ArgErr};
         {error, File, ArgErr} ->
             {error, File, ArgErr}
     end.
 
 do_run(R, SummaryLog) ->
-    TmpSummaryLog = SummaryLog ++ ".tmp",
-    case file:open(TmpSummaryLog, [write]) of
-        {ok, Fd} ->
+    case lux_log:open_summary_log(SummaryLog) of
+        {ok, SummaryFd} ->
             TimerRef = start_timer(R),
             try
-                R2 = R#rstate{log_fd = Fd, summary_log = SummaryLog},
-                double_log(R2, "~s~s\n",
-                           [?TAG("summary log"),
-                            SummaryLog]),
+                R2 = R#rstate{log_fd = SummaryFd, summary_log = SummaryLog},
                 R4 = parse_config(R2),
                 {R5, Summary, Results} =
                     run_suites(R4, R4#rstate.files, success, []),
                 print_results(R5, Summary, Results),
-                file:close(Fd),
-                ok = file:rename(TmpSummaryLog, SummaryLog),
-
-                SummaryLog = R5#rstate.summary_log,
+                lux_log:close_summary_log(SummaryFd, SummaryLog),
                 HtmlPrio = lux_utils:summary_prio(R5#rstate.html),
                 SummaryPrio = lux_utils:summary_prio(Summary),
                 if
@@ -113,10 +106,10 @@ do_run(R, SummaryLog) ->
                 end
             catch
                 throw:{error, File, ReasonStr} ->
-                    file:close(Fd),
+                    catch lux_log:close_summary_log(SummaryFd, SummaryLog),
                     {error, File, ReasonStr};
                 Class:Reason ->
-                    file:close(Fd),
+                    catch lux_log:close_summary_log(SummaryFd, SummaryLog),
                     ReasonStr =
                         lists:flatten(io_lib:format("~p:~p ~p",
                                                     [Class,
@@ -128,11 +121,11 @@ do_run(R, SummaryLog) ->
             end;
         {error, FileReason} ->
             FileErr =
-                safe_format(undefined,
-                            "ERROR: Failed to open logfile:"
-                            " ~s -> ~s\n",
-                            [TmpSummaryLog,
-                             file:format_error(FileReason)]),
+                lux_log:safe_format(undefined,
+                                    "ERROR: Failed to open logfile:"
+                                    " ~s -> ~s\n",
+                                    [SummaryLog,
+                                     file:format_error(FileReason)]),
             {error, SummaryLog, FileErr}
     end.
 
@@ -145,26 +138,26 @@ run_suites(R, [SuiteFile | SuiteFiles], Summary, Results) ->
                 run_cases(Mode, R, SuiteFile, CaseFiles, Summary, Results),
             run_suites(R2, SuiteFiles, Summary2, Results2);
         {ok, CaseFiles} ->
-            log(R, "\n~s~s\n",
-                [?TAG("test group begin"), SuiteFile]),
+            rlog(R, "\n~s~s\n",
+                 [?TAG("test group begin"), SuiteFile]),
             {R2, Summary2, Results2} =
                 run_cases(Mode, R, SuiteFile, CaseFiles, Summary, Results),
-            log(R2, "\n~s~s\n",
-                [?TAG("test group end"), SuiteFile]),
+            rlog(R2, "\n~s~s\n",
+                 [?TAG("test group end"), SuiteFile]),
             run_suites(R2, SuiteFiles, Summary2, Results2);
         {error, _Reason} when Mode =:= list ->
             run_suites(R, SuiteFiles, Summary, Results);
         {error, Reason} ->
-            log(R, "\n~s~s\n",
-                [?TAG("test group begin"), SuiteFile]),
-            double_log(R, "\n~s~s\n",
-                       [?TAG("test case"), SuiteFile]),
-            ListErr = double_log(R, "~s~s: ~s\n",
-                                 [?TAG("error"),
-                                  SuiteFile, file:format_error(Reason)]),
+            rlog(R, "\n~s~s\n",
+                 [?TAG("test group begin"), SuiteFile]),
+            double_rlog(R, "\n~s~s\n",
+                        [?TAG("test case"), SuiteFile]),
+            ListErr = double_rlog(R, "~s~s: ~s\n",
+                                  [?TAG("error"),
+                                   SuiteFile, file:format_error(Reason)]),
             Results2 = [{error, SuiteFile, ListErr} | Results],
-            log(R, "\n~s~s\n",
-                [?TAG("test group end"), SuiteFile]),
+            rlog(R, "\n~s~s\n",
+                 [?TAG("test group end"), SuiteFile]),
             run_suites(R, SuiteFiles, error, Results2)
     end;
 run_suites(R, [], Summary, Results) ->
@@ -251,11 +244,11 @@ check_file({Tag, File}) ->
                     ok;
                 false ->
                     BinErr =
-                        safe_format(undefined,
-                                    "ERROR: ~p ~s: ~s \n",
-                                    [Tag,
-                                     File,
-                                     file:format_error(enoent)]),
+                        lux_log:safe_format(undefined,
+                                            "ERROR: ~p ~s: ~s \n",
+                                            [Tag,
+                                             File,
+                                             file:format_error(enoent)]),
                     throw({error, File, BinErr})
             end;
         file ->
@@ -264,11 +257,11 @@ check_file({Tag, File}) ->
                     ok;
                 false ->
                     BinErr =
-                        safe_format(undefined,
-                                    "ERROR: ~s: ~s \n",
-                                    [File,
-                                     file:format_error(enoent)]),
-                                throw({error, File, BinErr})
+                        lux_log:safe_format(undefined,
+                                            "ERROR: ~s: ~s \n",
+                                            [File,
+                                             file:format_error(enoent)]),
+                    throw({error, File, BinErr})
             end
     end.
 
@@ -321,15 +314,16 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                     io:format("~s\n", [Script]),
                     run_cases(Mode, R, SuiteFile, Scripts, OldSummary, Results);
                 _ when SkipNames =/= []; SkipUnlessNames =/= [] ->
-                    double_log(R2, "\n~s~s\n",
-                               [?TAG("test case"), Script]),
+                    double_rlog(R2, "\n~s~s\n",
+                                [?TAG("test case"), Script]),
                     case SkipNames of
                         [SkipName | _] ->
-                            double_log(R2, "~sSKIP as variable ~s is set\n",
-                                       [?TAG("result"), SkipName]);
+                            double_rlog(R2, "~sSKIP as variable ~s is set\n",
+                                        [?TAG("result"), SkipName]);
                         [] ->
-                            double_log(R2, "~sSKIP as variable ~s is not set\n",
-                                       [?TAG("result"), hd(SkipUnlessNames)])
+                            double_rlog(R2,
+                                        "~sSKIP as variable ~s is not set\n",
+                                        [?TAG("result"), hd(SkipUnlessNames)])
                     end,
                     Summary = skip,
                     NewSummary = lux_utils:summary(OldSummary, Summary),
@@ -338,11 +332,11 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                     run_cases(Mode, R#rstate{warnings = AllWarnings},
                               SuiteFile, Scripts, NewSummary, Results2);
                 _ when RequireNames =/= [] ->
-                    double_log(R2, "\n~s~s\n",
-                               [?TAG("test case"), Script]),
-                    double_log(R2,
-                               "~sFAIL as required variable ~s is not set\n",
-                               [?TAG("result"),
+                    double_rlog(R2, "\n~s~s\n",
+                                [?TAG("test case"), Script]),
+                    double_rlog(R2,
+                                "~sFAIL as required variable ~s is not set\n",
+                                [?TAG("result"),
                                 hd(RequireNames)]),
                     Summary = fail,
                     NewSummary = lux_utils:summary(OldSummary, Summary),
@@ -370,8 +364,8 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                     run_cases(Mode, R#rstate{warnings = AllWarnings},
                               SuiteFile, Scripts, NewSummary, Results2);
                 validate ->
-                    double_log(R2, "\n~s~s\n",
-                               [?TAG("test case"), Script]),
+                    double_rlog(R2, "\n~s~s\n",
+                                [?TAG("test case"), Script]),
                     case NewWarnings of
                         [] ->
                             Summary = success,
@@ -383,14 +377,14 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                             Results2 = [{NewSummary, Script2, NewWarnings} |
                                         Results]
                     end,
-                    double_log(R2, "~s~s\n",
-                               [?TAG("result"),
-                                string:to_upper(atom_to_list(Summary))]),
+                    double_rlog(R2, "~s~s\n",
+                                [?TAG("result"),
+                                 string:to_upper(atom_to_list(Summary))]),
                     run_cases(Mode, R#rstate{warnings = AllWarnings},
                               SuiteFile, Scripts, NewSummary, Results2);
                 execute ->
-                    double_log(R2, "\n~s~s\n",
-                               [?TAG("test case"), Script]),
+                    double_rlog(R2, "\n~s~s\n",
+                                [?TAG("test case"), Script]),
                     Res = lux:interpret_commands(Script2, Commands, Opts),
                     case Res of
                         {ok, _, Summary, FullLineNo, Events} ->
@@ -412,10 +406,10 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
             io:format("~s:\n\tERROR: ~s: ~s\n", [Script, File2, Error2]),
             run_cases(Mode, R, SuiteFile, Scripts, OldSummary, Results);
         {error, R2, File2, FullLineNo, Error2} ->
-            double_log(R2, "\n~s~s\n",
-                       [?TAG("test case"), Script]),
-            double_log(R2, "~sERROR ~s: ~s\n",
-                       [?TAG("result"), File2, Error2]),
+            double_rlog(R2, "\n~s~s\n",
+                        [?TAG("test case"), Script]),
+            double_rlog(R2, "~sERROR ~s: ~s\n",
+                        [?TAG("result"), File2, Error2]),
             NewWarnings = R2#rstate.warnings,
             AllWarnings = R#rstate.warnings ++ NewWarnings,
             Summary = error,
@@ -473,76 +467,11 @@ extract_doc(File, Cmds) ->
           end,
     lists:reverse(lux_utils:foldl_cmds(Fun, [], File, [], Cmds)).
 
-print_results(R, Summary, Results) when R#rstate.mode == list;
-                                        R#rstate.mode == doc ->
-    {ok, Summary, R#rstate.summary_log, Results};
-print_results(R, Summary, Results) ->
-    %% Display most important results last
-    io:nl(),
-    log(R, "\n", []),
-    SuccessScripts =
-        [Script || {ok, Script, success, _FullLineNo, _Events} <- Results],
-    double_log(R, "~s~p\n",
-               [?TAG("successful"),
-                length(SuccessScripts)]),
-    print_skip(R, Results),
-    print_warning(R),
-    print_fail(R, Results),
-    print_error(R, Results),
-    double_log(R, "~s~s\n",
-               [?TAG("summary"),
-                [string:to_upper(Char) ||
-                    Char <- atom_to_list(Summary)]]).
-
-print_skip(R, Results) ->
-    case [{Script, FullLineNo} ||
-             {ok, Script, skip, FullLineNo, _Events} <- Results] of
-        [] ->
-            ok;
-        SkipScripts ->
-            double_log(R, "~s~p\n",
-                       [?TAG("skipped"),
-                        length(SkipScripts)]),
-            [double_log(R, "\t~s:~s\n", [F, L]) || {F, L} <- SkipScripts]
-    end.
-
-
-print_warning(R) ->
-    case [{Script, FullLineNo} ||
-             {warning, Script, FullLineNo, _String} <- R#rstate.warnings] of
-        [] ->
-            ok;
-        WarnScripts ->
-            double_log(R, "~s~p\n",
-                       [?TAG("warnings"),
-                        length(WarnScripts)]),
-            [double_log(R, "\t~s:~s\n", [F, L]) || {F, L} <- WarnScripts]
-    end.
-
-print_fail(R, Results) ->
-    case [{Script, FullLineNo} ||
-             {ok, Script, fail, FullLineNo, _Events} <- Results] of
-        [] ->
-            ok;
-        FailScripts ->
-            double_log(R, "~s~p\n",
-                       [?TAG("failed"),
-                        length(FailScripts)]),
-            [double_log(R, "\t~s:~s\n", [F, L]) || {F, L} <- FailScripts]
-    end.
-
-print_error(R, Results) ->
-    case [{Script, FullLineNo} ||
-             {error, Script, FullLineNo, _String} <- Results] of
-        [] ->
-            ok;
-        ErrorScripts ->
-            double_log(R, "~s~p\n",
-                       [?TAG("errors"),
-                        length(ErrorScripts)]),
-            [double_log(R, "\t~s:~s\n", [F, L]) ||
-                {F, L} <- ErrorScripts]
-    end.
+print_results(#rstate{mode=Mode, summary_log=SummaryLog}, Summary, Results)
+  when Mode =:= list; Mode =:= doc ->
+    {ok, Summary, SummaryLog, Results};
+print_results(#rstate{log_fd=Fd, warnings=Warnings}, Summary, Results) ->
+    lux_log:print_results(Fd, Summary, Results, Warnings).
 
 parse_script(R, SuiteFile, Script) ->
     case lux:parse_file(Script, []) of
@@ -550,7 +479,7 @@ parse_script(R, SuiteFile, Script) ->
             FileOpts2 = merge_opts(FileOpts, R#rstate.file_opts),
             FileR = R#rstate{file_opts = FileOpts2},
             LogDir = log_dir(R, SuiteFile, Script),
-            LogFun = fun(Bin) -> safe_write(R#rstate.log_fd, Bin) end,
+            LogFun = fun(Bin) -> lux_log:safe_write(R#rstate.log_fd, Bin) end,
             Mandatory = [{log_dir, LogDir}, {log_fun, LogFun}],
             UserOpts = merge_opts(Mandatory, FileR#rstate.user_opts),
             Opts = lists:foldl(fun(New, Acc) -> merge_opts(New, Acc) end,
@@ -595,13 +524,13 @@ parse_config(R) ->
 
     %% Log
     log_builtins(R3, ActualConfigName),
-    log(R3, "~s~s\n", [?TAG("default file"), DefaultFile]),
-    [log(R3, "~s~p\n",
-         [?TAG(Tag), Val]) || {Tag, Val} <- DefaultOpts],
-    log(R3, "~s~s\n",
-        [?TAG("config file"), ConfigFile]),
-    [log(R3, "~s~p\n",
-         [?TAG(Tag), Val]) || {Tag, Val} <- ConfigOpts],
+    rlog(R3, "~s~s\n", [?TAG("default file"), DefaultFile]),
+    [rlog(R3, "~s~p\n",
+          [?TAG(Tag), Val]) || {Tag, Val} <- DefaultOpts],
+    rlog(R3, "~s~s\n",
+         [?TAG("config file"), ConfigFile]),
+    [rlog(R3, "~s~p\n",
+          [?TAG(Tag), Val]) || {Tag, Val} <- ConfigOpts],
     R3.
 
 config_name() ->
@@ -632,35 +561,35 @@ parse_config_file(R, ConfigFile) ->
                 Bin =:= Enoent ->
                     ok;
                 true ->
-                    double_log(R, "~s~s: ~s\n",
-                               [?TAG("error"), Script, Bin])
+                    double_rlog(R, "~s~s: ~s\n",
+                                [?TAG("error"), Script, Bin])
             end,
             []
     end.
 
 log_builtins(R, ActualConfigName) ->
-    log(R, "\n~s~s\n",
-        [?TAG("start time"),
-         lux_utils:now_to_string(R#rstate.start_time)]),
-    log(R, "~s~s\n",
-        [?TAG("hostname"), hostname()]),
-    log(R, "~s~s\n",
-        [?TAG("architecture"), ActualConfigName]),
-    log(R, "~s~s\n",
-        [?TAG("system info"), sys_info()]),
-    log(R, "~s~s\n",
-        [?TAG("suite"), R#rstate.suite]),
-    log(R, "~s~s\n",
-        [?TAG("run"), R#rstate.run]),
-    log(R, "~s~s\n",
-        [?TAG("revision"), R#rstate.revision]),
+    rlog(R, "\n~s~s\n",
+         [?TAG("start time"),
+          lux_utils:now_to_string(R#rstate.start_time)]),
+    rlog(R, "~s~s\n",
+         [?TAG("hostname"), hostname()]),
+    rlog(R, "~s~s\n",
+         [?TAG("architecture"), ActualConfigName]),
+    rlog(R, "~s~s\n",
+         [?TAG("system info"), sys_info()]),
+    rlog(R, "~s~s\n",
+         [?TAG("suite"), R#rstate.suite]),
+    rlog(R, "~s~s\n",
+         [?TAG("run"), R#rstate.run]),
+    rlog(R, "~s~s\n",
+         [?TAG("revision"), R#rstate.revision]),
     {ok, Cwd} = file:get_cwd(),
-    log(R, "~s~s\n",
-        [?TAG("workdir"), Cwd]),
-    log(R, "~s~s\n",
-        [?TAG("config name"), R#rstate.config_name]),
-    log(R, "~s~s\n",
-        [?TAG("config_dir"), R#rstate.config_dir]).
+    rlog(R, "~s~s\n",
+         [?TAG("workdir"), Cwd]),
+    rlog(R, "~s~s\n",
+         [?TAG("config name"), R#rstate.config_name]),
+    rlog(R, "~s~s\n",
+         [?TAG("config_dir"), R#rstate.config_dir]).
 
 
 config_file(ConfigDir, UserConfigName, ActualConfigName) ->
@@ -719,57 +648,31 @@ log_dir(R, SuiteFile, Script) ->
 %%     R;
 %% warning(R, true, File, FullLineNo, Format, Args) ->
 %%     Warning = lists:flatten(io_lib:format(Format, Args)),
-%%     log(R, "~s~s", [?TAG("warning"), Warning]),
+%%     rlog(R, "~s~s", [?TAG("warning"), Warning]),
 %%     R#rstate{warnings = [{warning, File, FullLineNo, Warning} |
 %%     R#rstate.warnings]}.
 
-double_log(#rstate{log_fd = Fd}, Format, Args) ->
+double_rlog(#rstate{log_fd = Fd}, Format, Args) ->
     IoList = io_lib:format(Format, Args),
     case Fd of
-        undefined ->
-            list_to_binary(IoList);
-        _ ->
-            double_write(Fd, IoList)
+        undefined -> list_to_binary(IoList);
+        _         -> lux_log:double_write(Fd, IoList)
     end.
 
-double_write(Fd, IoList) ->
-    Bin = safe_write(Fd, IoList),
-    safe_write(undefined, Bin).
-
-log(#rstate{log_fd = Fd}, Format, Args) ->
+rlog(#rstate{log_fd = Fd}, Format, Args) ->
     IoList = io_lib:format(Format, Args),
     case Fd of
-       undefined ->
-           list_to_binary(IoList);
-       _ ->
-           safe_write(Fd, IoList)
+       undefined -> list_to_binary(IoList);
+       _         -> lux_log:safe_write(Fd, IoList)
    end.
-
-safe_format(Fd, Format, Args) ->
-    IoList = io_lib:format(Format, Args),
-    safe_write(Fd, IoList).
-
-safe_write(OptFd, IoList) when is_list(IoList) ->
-    safe_write(OptFd, list_to_binary(IoList));
-safe_write(OptFd, Bin) when is_binary(Bin) ->
-    case OptFd of
-        undefined ->
-            ok = io:format(Bin),
-            Bin;
-        Fd ->
-            ok = file:write(Fd, Bin),
-            Bin
-    end.
 
 start_timer(R) ->
     SuiteTimeout = pick_val(suite_timeout, R, infinity),
     Msg = {suite_timeout, SuiteTimeout},
     Multiplier = pick_val(multiplier, R, 1000),
     case lux_utils:multiply(SuiteTimeout, Multiplier) of
-        infinity ->
-            {infinity, Msg};
-        NewTimeout ->
-            {erlang:send_after(NewTimeout, self(), Msg), Msg}
+        infinity   -> {infinity, Msg};
+        NewTimeout -> {erlang:send_after(NewTimeout, self(), Msg), Msg}
     end.
 
 cancel_timer({Ref, Msg}) ->

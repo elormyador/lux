@@ -18,10 +18,10 @@ annotate_log(LogFile) ->
     annotate_log(true, LogFile).
 
 annotate_log(IsRecursive, LogFile) ->
-    LogFile2 = filename:absname(LogFile),
-    IsEventLog = lists:suffix("event.log", LogFile2),
-    LogDir = filename:dirname(LogFile2),
-    A = #astate{log_dir = LogDir, log_file = LogFile2},
+    AbsLogFile = filename:absname(LogFile),
+    IsEventLog = lists:suffix("event.log", AbsLogFile),
+    LogDir = filename:dirname(AbsLogFile),
+    A = #astate{log_dir = LogDir, log_file = AbsLogFile},
     Res =
         case IsEventLog of
             true  -> annotate_event_log(A);
@@ -29,7 +29,7 @@ annotate_log(IsRecursive, LogFile) ->
         end,
     case Res of
         {ok, IoList} ->
-            safe_write_file(LogFile2 ++ ".html", IoList);
+            safe_write_file(AbsLogFile ++ ".html", IoList);
         {error, _File, _ReasonStr} = Error ->
             Error
     end.
@@ -56,30 +56,29 @@ safe_write_file(File, IoList) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Annotate a summary log and all its event logs
 
-annotate_summary_log(IsRecursive, A) ->
-    case parse_summary_log(IsRecursive, A) of
-        {ok, SummaryLog, Result, Groups, ArchConfig, _FileInfo} ->
-            Html = html_groups(A, SummaryLog, Result, Groups, ArchConfig),
+annotate_summary_log(IsRecursive, #astate{log_file = SummaryLog}=A) ->
+    try lux_log:parse_summary_log(SummaryLog) of
+        {ok, AbsSummaryLog, Result, Groups, ArchConfig, _FileInfo, EventLogs} ->
+            Html = html_groups(A, AbsSummaryLog, Result, Groups, ArchConfig),
+            case IsRecursive of
+                true ->
+                    AnnotateEventLog =
+                        fun(EventLog) ->
+                                case annotate_log(EventLog) of
+                                    ok ->
+                                        ok;
+                                    {error, _, Reason} ->
+                                        io:format("ERROR in ~s\n\~p\n",
+                                                  [EventLog, Reason])
+                                end
+                        end,
+                    lists:foreach(AnnotateEventLog, EventLogs);
+                false ->
+                    ignore
+            end,
             {ok, Html};
         {error, _File, _Reason} = Error ->
             Error
-    end.
-
-parse_summary_log(IsRecursive, #astate{log_file = SummaryLog}) ->
-    try
-        case file:read_file(SummaryLog) of
-            {ok, LogBin} ->
-                Sections = binary:split(LogBin, <<"\n\n">>, [global]),
-                [Summary, ArchConfig | Rest] = Sections,
-                [_, SummaryLog2] = binary:split(Summary, <<": ">>),
-                [Result | Rest2] = lists:reverse(Rest),
-                Result2 = split_result(Result),
-                Groups = split_groups(IsRecursive, Rest2, []),
-                {ok, FI} = file:read_file_info(SummaryLog),
-                {ok, SummaryLog2, Result2, Groups, ArchConfig, FI};
-            {error, FileReason} ->
-                {error, SummaryLog, file:format_error(FileReason)}
-        end
     catch
         error:Reason2 ->
             ReasonStr =
@@ -89,99 +88,6 @@ parse_summary_log(IsRecursive, #astate{log_file = SummaryLog}) ->
                                              erlang:get_stacktrace()])),
             io:format("~s\n", [ReasonStr]),
             {error, SummaryLog, ReasonStr}
-    end.
-
-split_result(Result) ->
-    Lines = binary:split(Result, <<"\n">>, [global]),
-    [_, Summary | Rest] = lists:reverse(Lines),
-    [_, Summary2] = binary:split(Summary, <<": ">>),
-    Lines2 = lists:reverse(Rest),
-    Sections = split_result2(Lines2, []),
-    {result, Summary2, Sections}.
-
-split_result2([Heading | Lines], Acc) ->
-    [Slogan, Count] = binary:split(Heading, <<": ">>),
-    [Slogan2, _] = binary:split(Slogan, <<" ">>),
-    Pred = fun(Line) ->
-                   case Line of
-                       <<"\t", _File/binary>> -> true;
-                       _ -> false
-                   end
-           end,
-    {Files, Lines2} = lists:splitwith(Pred, Lines),
-    Parse = fun(<<"\t", File/binary>>) ->
-                    [File2, LineNo] = binary:split(File, <<":">>),
-                    {file, File2, LineNo}
-            end,
-    Files2 = lists:map(Parse, Files),
-    split_result2(Lines2, [{section, Slogan2, Count, Files2} | Acc]);
-split_result2([], Acc) ->
-    Acc. % Return in reverse order (most important first)
-
-split_groups(IsRecursive, [GroupEnd | Groups], Acc) ->
-    Pred = fun(Case) ->
-                   case binary:split(Case, <<": ">>) of
-                       %% BUGBUG: Kept for backwards compatibility a while
-                       [<<"test suite begin", _/binary>> |_] -> false;
-                       [<<"test group begin", _/binary>> |_] -> false;
-                       _ -> true
-                   end
-           end,
-    Split = lists:splitwith(Pred, Groups),
-    {Cases, [GroupBegin | Groups2]} = Split,
-    [_, Group] = binary:split(GroupBegin, <<": ">>),
-    [_, Group] = binary:split(GroupEnd, <<": ">>),
-    Cases2 = split_cases(IsRecursive, lists:reverse(Cases), []),
-    split_groups(IsRecursive, Groups2, [{test_group, Group, Cases2} | Acc]);
-split_groups(_IsRecursive, [], Acc) ->
-    Acc.
-
-split_cases(IsRecursive, [Case | Cases], Acc) ->
-    [NameRow | Sections] = binary:split(Case, <<"\n">>, [global]),
-    [<<"test case", _/binary>>, Name] = binary:split(NameRow, <<": ">>),
-    case Sections of
-        [] ->
-            Res = {result_case, Name, <<"ERROR">>, <<"unknown">>},
-            split_cases(IsRecursive, Cases, [Res | Acc]);
-        [Reason] ->
-            Res =
-                case binary:split(Reason,    <<": ">>) of
-                    [<<"result", _/binary>>, Reason2] ->
-                        {result_case, Name, Reason2, Reason};
-                    [<<"error", _/binary>>, Reason2] ->
-                        {result_case, Name, <<"ERROR">>, Reason2}
-                end,
-            split_cases(IsRecursive, Cases, [Res | Acc]);
-        [_ScriptRow, LogRow | DocAndResult] ->
-            [<<"event log", _/binary>>, RawEventLog] =
-                binary:split(LogRow,  <<": ">>),
-            EventLog = binary_to_list(RawEventLog),
-            case IsRecursive of
-                true ->
-                    case annotate_log(EventLog) of
-                        ok ->
-                            ok;
-                        {error, _, Reason} ->
-                            io:format("ERROR in ~s\n\~p\n", [EventLog, Reason])
-                    end;
-                false ->
-                    ignore
-            end,
-            {Doc, ResultCase} = split_doc(DocAndResult, []),
-            Result = lux_log:parse_result(ResultCase),
-            HtmlLog = EventLog ++ ".html",
-            Res = {test_case, Name, EventLog, Doc, HtmlLog, Result},
-            split_cases(IsRecursive, Cases, [Res | Acc])
-    end;
-split_cases(_IsRecursive, [], Acc) ->
-    lists:reverse(Acc).
-
-split_doc([H|T] = Rest, AccDoc) ->
-    case binary:split(H, <<": ">>) of
-        [<<"doc", _/binary>>, Doc] ->
-            split_doc(T, [Doc | AccDoc]);
-        _ ->
-            {lists:reverse(AccDoc), Rest}
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -1164,9 +1070,8 @@ do_parse_summary_logs(HtmlFile, Dir, Acc, Skip) ->
                         true ->
                             %% A summary log
                             File = filename:join([Dir, Base]),
-                            SumA = #astate{log_dir=Dir, log_file=File},
                             io:format(".", []),
-                            Res = parse_summary_log(false, SumA),
+                            {Res, _EventLogs} = lux_log:parse_summary_log(File),
                             [parse_run_summary(HtmlFile, Res) | Acc];
                         false ->
                             io:format("s", []),

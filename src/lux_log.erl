@@ -7,12 +7,203 @@
 
 -module(lux_log).
 
--export([open_event_log/5, close_event_log/1, write_event/4, scan_events/1,
+-export([parse_summary_log/1,
+         open_summary_log/1, close_summary_log/2,
+         print_results/4,
+         safe_format/3, safe_write/2, double_write/2,
+         open_event_log/5, close_event_log/1, write_event/4, scan_events/1,
          parse_events/2, parse_config/1, parse_io_logs/2, parse_result/1,
          open_config_log/3, close_config_log/2,
          safe_format/5, safe_write/4]).
 
 -include("lux.hrl").
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Summary log
+
+open_summary_log(SummaryLog) ->
+   TmpSummaryLog = SummaryLog ++ ".tmp",
+    case file:open(TmpSummaryLog, [write]) of
+        {ok, SummaryFd} ->
+            IoList = io_lib:format("~s~s\n",
+                                   [?TAG("summary log"), SummaryLog]),
+            double_write(SummaryFd, IoList),
+            {ok, SummaryFd};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+close_summary_log(SummaryFd, SummaryLog) ->
+    file:close(SummaryFd),
+    TmpSummaryLog = SummaryLog ++ ".tmp",
+    ok = file:rename(TmpSummaryLog, SummaryLog).
+
+
+print_results(Fd, Summary, Results, Warnings) ->
+    %% Display most important results last
+    io:nl(),
+    safe_format(Fd, "\n", []),
+    SuccessScripts =
+        [Script || {ok, Script, success, _FullLineNo, _Events} <- Results],
+    double_format(Fd, "~s~p\n",
+                  [?TAG("successful"),
+                   length(SuccessScripts)]),
+    print_skip(Fd, Results),
+    print_warning(Fd, Warnings),
+    print_fail(Fd, Results),
+    print_error(Fd, Results),
+    double_format(Fd, "~s~s\n",
+                  [?TAG("summary"),
+                   [string:to_upper(Char) ||
+                       Char <- atom_to_list(Summary)]]).
+
+print_skip(Fd, Results) ->
+    case [{Script, FullLineNo} ||
+             {ok, Script, skip, FullLineNo, _Events} <- Results] of
+        [] ->
+            ok;
+        SkipScripts ->
+            double_format(Fd, "~s~p\n",
+                          [?TAG("skipped"),
+                           length(SkipScripts)]),
+            [double_format(Fd, "\t~s:~s\n", [F, L]) || {F, L} <- SkipScripts]
+    end.
+
+
+print_warning(Fd, Warnings) ->
+    case [{Script, FullLineNo} ||
+             {warning, Script, FullLineNo, _String} <- Warnings] of
+        [] ->
+            ok;
+        WarnScripts ->
+            double_format(Fd, "~s~p\n",
+                          [?TAG("warnings"),
+                           length(WarnScripts)]),
+            [double_format(Fd, "\t~s:~s\n", [F, L]) || {F, L} <- WarnScripts]
+    end.
+
+print_fail(Fd, Results) ->
+    case [{Script, FullLineNo} ||
+             {ok, Script, fail, FullLineNo, _Events} <- Results] of
+        [] ->
+            ok;
+        FailScripts ->
+            double_format(Fd, "~s~p\n",
+                          [?TAG("failed"),
+                           length(FailScripts)]),
+            [double_format(Fd, "\t~s:~s\n", [F, L]) || {F, L} <- FailScripts]
+    end.
+
+print_error(Fd, Results) ->
+    case [{Script, FullLineNo} ||
+             {error, Script, FullLineNo, _String} <- Results] of
+        [] ->
+            ok;
+        ErrorScripts ->
+            double_format(Fd, "~s~p\n",
+                          [?TAG("errors"),
+                           length(ErrorScripts)]),
+            [double_format(Fd, "\t~s:~s\n", [F, L]) ||
+                {F, L} <- ErrorScripts]
+    end.
+
+parse_summary_log(SummaryLog) ->
+    case file:read_file(SummaryLog) of
+        {ok, LogBin} ->
+            Sections = binary:split(LogBin, <<"\n\n">>, [global]),
+            [Summary, ArchConfig | Rest] = Sections,
+            [_, SummaryLog2] = binary:split(Summary, <<": ">>),
+            [Result | Rest2] = lists:reverse(Rest),
+            Result2 = split_result(Result),
+            {Groups, EventLogs} = split_groups(Rest2, [], []),
+            {ok, FI} = file:read_file_info(SummaryLog),
+            {ok, SummaryLog2, Result2, Groups, ArchConfig, FI, EventLogs};
+        {error, FileReason} ->
+            {error, SummaryLog, file:format_error(FileReason)}
+    end.
+
+split_result(Result) ->
+    Lines = binary:split(Result, <<"\n">>, [global]),
+    [_, Summary | Rest] = lists:reverse(Lines),
+    [_, Summary2] = binary:split(Summary, <<": ">>),
+    Lines2 = lists:reverse(Rest),
+    Sections = split_result2(Lines2, []),
+    {result, Summary2, Sections}.
+
+split_result2([Heading | Lines], Acc) ->
+    [Slogan, Count] = binary:split(Heading, <<": ">>),
+    [Slogan2, _] = binary:split(Slogan, <<" ">>),
+    Pred = fun(Line) ->
+                   case Line of
+                       <<"\t", _File/binary>> -> true;
+                       _ -> false
+                   end
+           end,
+    {Files, Lines2} = lists:splitwith(Pred, Lines),
+    Parse = fun(<<"\t", File/binary>>) ->
+                    [File2, LineNo] = binary:split(File, <<":">>),
+                    {file, File2, LineNo}
+            end,
+    Files2 = lists:map(Parse, Files),
+    split_result2(Lines2, [{section, Slogan2, Count, Files2} | Acc]);
+split_result2([], Acc) ->
+    Acc. % Return in reverse order (most important first)
+
+split_groups([GroupEnd | Groups], Acc, EventLogs) ->
+    Pred = fun(Case) ->
+                   case binary:split(Case, <<": ">>) of
+                       %% BUGBUG: Kept for backwards compatibility a while
+                       [<<"test suite begin", _/binary>> |_] -> false;
+                       [<<"test group begin", _/binary>> |_] -> false;
+                       _ -> true
+                   end
+           end,
+    Split = lists:splitwith(Pred, Groups),
+    {Cases, [GroupBegin | Groups2]} = Split,
+    [_, Group] = binary:split(GroupBegin, <<": ">>),
+    [_, Group] = binary:split(GroupEnd, <<": ">>),
+    {Cases2, EventLogs2} =
+        split_cases(lists:reverse(Cases), [], EventLogs),
+    split_groups(Groups2, [{test_group, Group, Cases2} | Acc], EventLogs2);
+split_groups([], Acc, EventLogs) ->
+    {Acc, EventLogs}.
+
+split_cases([Case | Cases], Acc, EventLogs) ->
+    [NameRow | Sections] = binary:split(Case, <<"\n">>, [global]),
+    [<<"test case", _/binary>>, Name] = binary:split(NameRow, <<": ">>),
+    case Sections of
+        [] ->
+            Res = {result_case, Name, <<"ERROR">>, <<"unknown">>},
+            split_cases(Cases, [Res | Acc], EventLogs);
+        [Reason] ->
+            Res =
+                case binary:split(Reason,    <<": ">>) of
+                    [<<"result", _/binary>>, Reason2] ->
+                        {result_case, Name, Reason2, Reason};
+                    [<<"error", _/binary>>, Reason2] ->
+                        {result_case, Name, <<"ERROR">>, Reason2}
+                end,
+            split_cases(Cases, [Res | Acc], EventLogs);
+        [_ScriptRow, LogRow | DocAndResult] ->
+            [<<"event log", _/binary>>, RawEventLog] =
+                binary:split(LogRow,  <<": ">>),
+            {Doc, ResultCase} = split_doc(DocAndResult, []),
+            Result = lux_log:parse_result(ResultCase),
+            EventLog = binary_to_list(RawEventLog),
+            HtmlLog = EventLog ++ ".html",
+            Res = {test_case, Name, EventLog, Doc, HtmlLog, Result},
+            split_cases(Cases, [Res | Acc], [EventLog|EventLogs])
+    end;
+split_cases([], Acc, EventLogs) ->
+    {lists:reverse(Acc), EventLogs}.
+
+split_doc([H|T] = Rest, AccDoc) ->
+    case binary:split(H, <<": ">>) of
+        [<<"doc", _/binary>>, Doc] ->
+            split_doc(T, [Doc | AccDoc]);
+        _ ->
+            {lists:reverse(AccDoc), Rest}
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Event log
@@ -257,6 +448,35 @@ config_data(Config) ->
                 end
         end,
     lists:map(Fun, Config).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+safe_format(Fd, Format, Args) ->
+    IoList = io_lib:format(Format, Args),
+    safe_write(Fd, IoList).
+
+double_format(Fd, Format, Args) ->
+    IoList = io_lib:format(Format, Args),
+    case Fd of
+        undefined -> list_to_binary(IoList);
+        _         -> double_write(Fd, IoList)
+    end.
+
+safe_write(OptFd, IoList) when is_list(IoList) ->
+    safe_write(OptFd, list_to_binary(IoList));
+safe_write(OptFd, Bin) when is_binary(Bin) ->
+    case OptFd of
+        undefined ->
+            ok = io:format(Bin),
+            Bin;
+        Fd ->
+            ok = file:write(Fd, Bin),
+            Bin
+    end.
+
+double_write(Fd, IoList) when Fd =/= undefined ->
+    Bin = safe_write(Fd, IoList),
+    safe_write(undefined, Bin).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
