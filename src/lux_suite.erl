@@ -86,15 +86,24 @@ do_run(R, SummaryLog) ->
             TimerRef = start_timer(R),
             try
                 R2 = R#rstate{log_fd = SummaryFd, summary_log = SummaryLog},
-                {ConfigData, R4} = parse_config(R2),
+                {ConfigData, R3} = parse_config(R2),
                 LogDir = filename:dirname(SummaryLog),
                 ConfigLog = filename:join([LogDir, "lux_config.log"]),
                 lux_log:write_config_log(ConfigLog, ConfigData),
+                lux_log:write_results(SummaryLog, skip, [], []),
+                InitialSummary = success,
+                HtmlPrio = lux_utils:summary_prio(R3#rstate.html),
+                %% SummaryPrio0 = lux_utils:summary_prio(InitialSummary),
+                %% if
+                %%     SummaryPrio0 >= HtmlPrio, R3#rstate.mode =/= list ->
+                %%         annotate_summary_log(R3, InitialSummary, []);
+                %%     true ->
+                %%         ok
+                %% end,
                 {R5, Summary, Results} =
-                    run_suites(R4, R4#rstate.files, success, []),
+                    run_suites(R3, R3#rstate.files, InitialSummary, []),
                 _ = print_results(R5, Summary, Results),
                 lux_log:close_summary_log(SummaryFd, SummaryLog),
-                HtmlPrio = lux_utils:summary_prio(R5#rstate.html),
                 SummaryPrio = lux_utils:summary_prio(Summary),
                 if
                     SummaryPrio >= HtmlPrio, R5#rstate.mode =/= list ->
@@ -404,12 +413,7 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                             EventLog =
                                 filename:join([LogDir, Base ++ ".event.log"]),
                             lux_html:annotate_log(false, EventLog),
-                            file:sync(R3#rstate.log_fd), % Flush summary log
-                            print_results(R3, NewSummary, NewResults),
-                            SummaryLog = R3#rstate.summary_log,
-                            TmpLog = SummaryLog ++ ".tmp",
-                            lux_html:annotate_log(false, TmpLog),
-                            file:rename(TmpLog++".html",SummaryLog++".html");
+                            annotate_summary_log(R3, NewSummary, NewResults);
                         true ->
                             ignore
                     end,
@@ -437,6 +441,14 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
     end;
 run_cases(_Mode, R, _SuiteFile, [], Summary, Results) ->
     {R, Summary, Results}.
+
+annotate_summary_log(R, NewSummary, NewResults) ->
+    file:sync(R#rstate.log_fd), % Flush summary log
+    print_results(R, NewSummary, NewResults),
+    SummaryLog = R#rstate.summary_log,
+    TmpLog = SummaryLog ++ ".tmp",
+    lux_html:annotate_log(false, TmpLog),
+    file:rename(TmpLog++".html",SummaryLog++".html").
 
 list_matching_variables(R, Tag, DoNegate) ->
     Fun =

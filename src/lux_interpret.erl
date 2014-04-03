@@ -951,7 +951,9 @@ ping(I, When) when When =:= immediate; When =:= wait_for_expect ->
             I
     end.
 
-multi_ping(I, When) when When =:= immediate; When =:= wait_for_expect ->
+multi_ping(I, When) when  When =:= flush;
+                          When =:= immediate;
+                          When =:= wait_for_expect ->
     Pids = multi_cast(I, {ping, self(), When}),
     wait_for_pong(I, Pids).
 

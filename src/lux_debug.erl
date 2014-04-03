@@ -880,7 +880,10 @@ all_logs(#istate{orig_file=Script, log_dir=LogDir, logs=StdLogs} = I) ->
     Base = filename:basename(Script),
     EventLog = filename:join([LogDir, Base ++ ".event.log"]),
     ConfigLog = filename:join([LogDir, Base ++ ".config.log"]),
-    [ConfigLog, EventLog | Logs].
+    SuiteConfigLog = filename:join([LogDir, "lux_config.log"]),
+    SummaryLog = filename:join([LogDir, "lux_summary.log.tmp"]),
+    ResultLog = filename:join([LogDir, "lux_result.log"]),
+    [SuiteConfigLog, SummaryLog, ResultLog, ConfigLog, EventLog | Logs].
 
 tail(#istate{log_dir=LogDir} = I, AbsFile, CmdState, Format, UserN) ->
     RelFile = lux_utils:drop_prefix(LogDir, AbsFile),
