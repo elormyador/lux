@@ -92,7 +92,7 @@ do_run(R, SummaryLog) ->
                 lux_log:write_config_log(ConfigLog, ConfigData),
                 {R5, Summary, Results} =
                     run_suites(R4, R4#rstate.files, success, []),
-                print_results(R5, Summary, Results),
+                _ = print_results(R5, Summary, Results),
                 lux_log:close_summary_log(SummaryFd, SummaryLog),
                 HtmlPrio = lux_utils:summary_prio(R5#rstate.html),
                 SummaryPrio = lux_utils:summary_prio(Summary),
@@ -335,7 +335,7 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                     double_rlog(R2,
                                 "~sFAIL as required variable ~s is not set\n",
                                 [?TAG("result"),
-                                hd(RequireNames)]),
+                                 hd(RequireNames)]),
                     Summary = fail,
                     NewSummary = lux_utils:summary(OldSummary, Summary),
                     Res = {ok, Script2, Summary, "0", []},
@@ -388,26 +388,33 @@ run_cases(Mode, R, SuiteFile, [Script | Scripts], OldSummary, Results) ->
                         {ok, _, Summary, FullLineNo, Events} ->
                             NewSummary = lux_utils:summary(OldSummary, Summary),
                             Res2 = {ok, Script, Summary, FullLineNo, Events},
-                            Results2 = [Res2 | Results];
+                            NewResults = [Res2 | Results];
                         {error, _, _, _} ->
                             Summary = error,
                             NewSummary = lux_utils:summary(OldSummary, Summary),
-                            Results2 = [Res | Results]
+                            NewResults = [Res | Results]
                     end,
                     HtmlPrio = lux_utils:summary_prio(R2#rstate.html),
-                    SummaryPrio = lux_utils:summary_prio(Summary),
+                    SummaryPrio = lux_utils:summary_prio(NewSummary),
+                    R3 = R2#rstate{warnings = AllWarnings},
                     if
                         SummaryPrio >= HtmlPrio ->
                             LogDir = R2#rstate.log_dir,
                             Base = filename:basename(Script),
                             EventLog =
                                 filename:join([LogDir, Base ++ ".event.log"]),
-                            lux_html:annotate_log(false, EventLog);
+                            lux_html:annotate_log(false, EventLog),
+                            file:sync(R3#rstate.log_fd), % Flush summary log
+                            print_results(R3, NewSummary, NewResults),
+                            SummaryLog = R3#rstate.summary_log,
+                            TmpLog = SummaryLog ++ ".tmp",
+                            lux_html:annotate_log(false, TmpLog),
+                            file:rename(TmpLog++".html",SummaryLog++".html");
                         true ->
                             ignore
                     end,
-                    run_cases(Mode, R#rstate{warnings = AllWarnings},
-                              SuiteFile, Scripts, NewSummary, Results2)
+                    run_cases(Mode, R3,
+                              SuiteFile, Scripts, NewSummary, NewResults)
             end;
         {error, _R2, _File2, _FullLineNo, _Error2} when Mode =:= list ->
             io:format("~s\n", [Script]),
@@ -477,11 +484,14 @@ extract_doc(File, Cmds) ->
           end,
     lists:reverse(lux_utils:foldl_cmds(Fun, [], File, [], Cmds)).
 
-print_results(#rstate{mode=Mode, summary_log=SummaryLog}, Summary, Results)
+print_results(#rstate{mode=Mode, summary_log=SummaryLog},
+              Summary, Results)
   when Mode =:= list; Mode =:= doc ->
     {ok, Summary, SummaryLog, Results};
-print_results(#rstate{log_fd=Fd, warnings=Warnings}, Summary, Results) ->
-    lux_log:print_results(Fd, Summary, Results, Warnings).
+print_results(#rstate{summary_log=SummaryLog, warnings=Warnings},
+              Summary, Results) ->
+    lux_log:write_results(SummaryLog, Summary, Results, Warnings),
+    {ok, Summary, SummaryLog, Results}.
 
 parse_script(R, SuiteFile, Script) ->
     case lux:parse_file(Script, []) of
@@ -489,8 +499,9 @@ parse_script(R, SuiteFile, Script) ->
             FileOpts2 = merge_opts(FileOpts, R#rstate.file_opts),
             FileR = R#rstate{file_opts = FileOpts2},
             LogDir = log_dir(R, SuiteFile, Script),
-            LogFun = fun(Bin) -> lux_log:safe_write(R#rstate.log_fd, Bin) end,
-            Mandatory = [{log_dir, LogDir}, {log_fun, LogFun}],
+            LogFd = R#rstate.log_fd,
+            LogFun = fun(Bin) -> lux_log:safe_write(LogFd, Bin) end,
+            Mandatory = [{log_dir, LogDir}, {log_fun, LogFun}, {log_fd, LogFd}],
             UserOpts = merge_opts(Mandatory, FileR#rstate.user_opts),
             Opts = lists:foldl(fun(New, Acc) -> merge_opts(New, Acc) end,
                                [],

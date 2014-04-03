@@ -305,6 +305,9 @@ shell_wait_for_event(#cstate{name = _Name, port = Port} = C, OrigC) ->
 
 opt_ping_reply(C, From, When) when C#cstate.wait_for_expect =:= undefined ->
     case When of
+        flush ->
+            flush_logs(C),
+            ping_reply(C, From);
         immediate ->
             ping_reply(C, From);
         wait_for_expect when C#cstate.expected =:= undefined ->
@@ -834,6 +837,18 @@ close_logs(#cstate{stdin_log_fd = InFd, stdout_log_fd = OutFd} = C) ->
              event_log_fd = closed,
              stdin_log_fd = closed,
              stdout_log_fd = closed}.
+
+flush_logs(#cstate{event_log_fd = {_,EventFd},
+                   stdin_log_fd = {_,InFd},
+                   stdout_log_fd = {_,OutFd}}) ->
+    file:sync(EventFd),
+    file:sync(InFd),
+    file:sync(OutFd),
+    ok;
+flush_logs(#cstate{event_log_fd = closed,
+                   stdin_log_fd = closed,
+                   stdout_log_fd = closed}) ->
+    ok.
 
 wait_for_down(C) ->
     receive

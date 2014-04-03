@@ -14,7 +14,8 @@
          parse_iopts/2,
          parse_iopt/3
         ]).
--export([opt_dispatch_cmd/1]).
+-export([opt_dispatch_cmd/1,
+         flush_logs/1]).
 
 interpret_commands(Script, Commands, Opts) ->
     I = default_istate(Script),
@@ -133,6 +134,8 @@ config_type(Name) ->
             {ok, #istate.log_dir, [string]};
         log_fun->
             {ok, #istate.log_fun, [{function, 1}]};
+        log_fd->
+            {ok, #istate.summary_log_fd, [io_device]};
         multiplier ->
             {ok, #istate.multiplier, [{integer, 0, infinity}]};
         suite_timeout ->
@@ -198,7 +201,9 @@ config_val([Type | Types], Name, Val, Pos, I) ->
             {integer, _Min, _Max} when is_list(Val) ->
                 config_val([Type], Name, list_to_integer(Val), Pos, I);
             {list, SubTypes} when is_list(SubTypes) ->
-                config_val(SubTypes, Name, Val, Pos, I)
+                config_val(SubTypes, Name, Val, Pos, I);
+            io_device ->
+                {ok, setelement(Pos, I, Val)}
         end
     catch
         throw:{no_such_var, BadName} ->
@@ -243,12 +248,7 @@ wait_for_done(I, Pid) ->
                                     if
                                         Reason =:= normal;
                                         Reason =:= success ->
-                                            double_ilog(I3, "~sSUCCESS\n",
-                                                        [?TAG("result")]),
-                                            L = length(I3#istate.commands),
-                                            FullLineNo = integer_to_list(L),
-                                            {ok, File, success,
-                                             FullLineNo, Results};
+                                            print_success(I3, File, Results);
                                         true ->
                                             Latest = I3#istate.latest_lineno,
                                             Stack = I3#istate.incl_stack,
@@ -276,6 +276,12 @@ wait_for_done(I, Pid) ->
             I2 = post_ilog(I),
             internal_error(I2, {'EXIT', Reason})
     end.
+
+print_success(I, File, Results) ->
+    double_ilog(I, "~sSUCCESS\n", [?TAG("result")]),
+    L = length(I#istate.commands),
+    FullLineNo = integer_to_list(L),
+    {ok, File, success, FullLineNo, Results}.
 
 print_fail(I, File, Results,
            #result{outcome    = fail,
@@ -310,6 +316,15 @@ full_lineno(I, LineNo, InclStack) ->
     RevFile = lux_utils:filename_split(I#istate.file),
     FullStack = [{RevFile, LineNo} | InclStack],
     lux_utils:full_lineno(FullStack).
+
+flush_logs(I) ->
+    flush_summary_log(I),
+    multi_ping(I, flush).
+
+flush_summary_log(#istate{summary_log_fd=undefined}) ->
+    ok;
+flush_summary_log(#istate{summary_log_fd=SummaryFd}) ->
+    file:sync(SummaryFd).
 
 post_ilog(#istate{logs = Logs, config_log_fd = {_, ConfigFd}}=I) ->
     lux_log:close_config_log(ConfigFd, Logs),
@@ -443,8 +458,8 @@ interpret_loop(I) ->
                 infinity
         end,
     receive
-        {debug_call, Pid, CmdStr, CmdState} ->
-            I2 = lux_debug:eval_cmd(I, Pid, CmdStr, CmdState),
+        {debug_call, Pid, Cmd, CmdState} ->
+            I2 = lux_debug:eval_cmd(I, Pid, Cmd, CmdState),
             interpret_loop(I2);
         stopped_by_user ->
             %% Ordered to stop by user

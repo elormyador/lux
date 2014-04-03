@@ -93,25 +93,33 @@ annotate_summary_log(IsRecursive, #astate{log_file=AbsSummaryLog}=A) ->
 html_groups(A, SummaryLog, Result, Groups, ArchConfig) ->
     Dir = filename:basename(filename:dirname(SummaryLog)),
     RelSummaryLog = drop_prefix(A, SummaryLog),
+    IsTmp = lux_log:is_temporary(SummaryLog),
     [
      html_header(["Lux summary log (", Dir, ")"]),
      html_href("h2", "Raw summary log: ", "", RelSummaryLog, RelSummaryLog),
      html_href("h3", "", "", "#suite_config", "Suite configuration"),
-     html_summary_result(A, Result, Groups),
+     html_summary_result(A, Result, Groups, IsTmp),
      html_groups2(A, Groups),
      html_anchor("h2", "", "suite_config", "Suite configuration:"),
      html_div(<<"annotate">>, ArchConfig),
      html_footer()
     ].
 
-html_summary_result(A, {result, Summary, Sections}, Groups) ->
+html_summary_result(A, {result, Summary, Sections}, Groups, IsTmp) ->
     %% io:format("Sections: ~p\n", [Sections]),
+    ResultString = choose_tmp(IsTmp, "Temporary ","Final "),
     [
-     "\n<h2>Result: ", Summary, "</h2>\n",
+     "\n<h2>", ResultString, "result: ", Summary, "</h2>\n",
      "<div class=case><pre>",
      [html_summary_section(A, S, Groups) || S <- Sections],
      "</pre></div>"
     ].
+
+choose_tmp(IsTmp, TmpString, String) ->
+    case IsTmp of
+        true  -> TmpString;
+        false -> String
+    end.
 
 html_summary_section(A, {section, Slogan, Count, Files}, Groups) ->
     [

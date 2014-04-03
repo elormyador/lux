@@ -7,21 +7,27 @@
 
 -module(lux_log).
 
- -export([parse_summary_log/1, parse_run_summary/3,
-          open_summary_log/1, close_summary_tmp_log/1, close_summary_log/2,
-          write_config_log/2,
-          print_results/4,
-          safe_format/3, safe_write/2, double_write/2,
-          open_event_log/5, close_event_log/1, write_event/4, scan_events/1,
-          parse_events/2, parse_config/1, parse_io_logs/2, parse_result/1,
-          open_config_log/3, close_config_log/2,
-          safe_format/5, safe_write/4]).
+-export([is_temporary/1, parse_summary_log/1, parse_run_summary/3,
+         open_summary_log/1, close_summary_tmp_log/1, close_summary_log/2,
+         write_config_log/2,
+         write_results/4, print_results/4, parse_result/1,
+         safe_format/3, safe_write/2, double_write/2,
+         open_event_log/5, close_event_log/1, write_event/4, scan_events/1,
+         parse_events/2, parse_config/1, parse_io_logs/2,
+         open_config_log/3, close_config_log/2,
+         safe_format/5, safe_write/4]).
 
- -include_lib("kernel/include/file.hrl").
- -include("lux.hrl").
+-include_lib("kernel/include/file.hrl").
+-include("lux.hrl").
 
- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
- %% Summary log
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Summary log
+
+is_temporary(SummaryLog) ->
+    case lists:reverse(SummaryLog) of
+        "pmt."++_ -> true;
+        _         -> false
+    end.
 
 open_summary_log(SummaryLog) ->
     TmpSummaryLog = SummaryLog ++ ".tmp",
@@ -48,78 +54,10 @@ close_summary_log(SummaryFd, SummaryLog) ->
 close_summary_tmp_log(SummaryFd) ->
     file:close(SummaryFd).
 
-print_results(Fd, Summary, Results, Warnings) ->
-    %% Display most important results last
-    io:nl(),
-    safe_format(Fd, "\n", []),
-    SuccessScripts =
-        [Script || {ok, Script, success, _FullLineNo, _Events} <- Results],
-    double_format(Fd, "~s~p\n",
-                  [?TAG("successful"),
-                   length(SuccessScripts)]),
-    print_skip(Fd, Results),
-    print_warning(Fd, Warnings),
-    print_fail(Fd, Results),
-    print_error(Fd, Results),
-    double_format(Fd, "~s~s\n",
-                  [?TAG("summary"),
-                   [string:to_upper(Char) ||
-                       Char <- atom_to_list(Summary)]]).
-
-print_skip(Fd, Results) ->
-    case [{Script, FullLineNo} ||
-             {ok, Script, skip, FullLineNo, _Events} <- Results] of
-        [] ->
-            ok;
-        SkipScripts ->
-            double_format(Fd, "~s~p\n",
-                          [?TAG("skipped"),
-                           length(SkipScripts)]),
-            [double_format(Fd, "\t~s:~s\n", [F, L]) || {F, L} <- SkipScripts]
-    end.
-
-
-print_warning(Fd, Warnings) ->
-    case [{Script, FullLineNo} ||
-             {warning, Script, FullLineNo, _String} <- Warnings] of
-        [] ->
-            ok;
-        WarnScripts ->
-            double_format(Fd, "~s~p\n",
-                          [?TAG("warnings"),
-                           length(WarnScripts)]),
-            [double_format(Fd, "\t~s:~s\n", [F, L]) || {F, L} <- WarnScripts]
-    end.
-
-print_fail(Fd, Results) ->
-    case [{Script, FullLineNo} ||
-             {ok, Script, fail, FullLineNo, _Events} <- Results] of
-        [] ->
-            ok;
-        FailScripts ->
-            double_format(Fd, "~s~p\n",
-                          [?TAG("failed"),
-                           length(FailScripts)]),
-            [double_format(Fd, "\t~s:~s\n", [F, L]) || {F, L} <- FailScripts]
-    end.
-
-print_error(Fd, Results) ->
-    case [{Script, FullLineNo} ||
-             {error, Script, FullLineNo, _String} <- Results] of
-        [] ->
-            ok;
-        ErrorScripts ->
-            double_format(Fd, "~s~p\n",
-                          [?TAG("errors"),
-                           length(ErrorScripts)]),
-            [double_format(Fd, "\t~s:~s\n", [F, L]) ||
-                {F, L} <- ErrorScripts]
-    end.
-
 parse_summary_log(SummaryLog) ->
     case file:read_file(SummaryLog) of
         {ok, <<"summary log       : ",
-               ?SUMMARY_LOG_VERSION,
+            ?SUMMARY_LOG_VERSION,
                "\n\n",
                LogBin/binary>>} ->
             %% Latest version
@@ -128,21 +66,19 @@ parse_summary_log(SummaryLog) ->
             ConfigLog = filename:join([LogDir, "lux_config.log"]),
             {ok, RawConfig} = scan_config(ConfigLog),
             ArchConfig = parse_config(RawConfig),
-            [Result | Rest2] = lists:reverse(Sections),
-            Result2 = split_result(Result),
-            {Cases, EventLogs} =
-                split_cases(lists:reverse(Rest2), [], []),
+            {ok, Result} = parse_summary_result(LogDir),
+            {Cases, EventLogs} = split_cases(Sections, [], []),
             {ok, FI} = file:read_file_info(SummaryLog),
-            {ok, Result2, [{test_group, "", Cases}], ArchConfig, FI, EventLogs};
+            {ok, Result, [{test_group, "", Cases}], ArchConfig, FI, EventLogs};
         {ok, LogBin} ->
             %% 0.1
             Sections = binary:split(LogBin, <<"\n\n">>, [global]),
             [_AbsSummaryLog, ArchConfig | Rest] = Sections,
-            [Result | Rest2] = lists:reverse(Rest),
-            Result2 = split_result(Result),
+            [RawResult | Rest2] = lists:reverse(Rest),
+            Result = split_result(RawResult),
             {Groups, EventLogs} = split_groups(Rest2, [], []),
             {ok, FI} = file:read_file_info(SummaryLog),
-            {ok, Result2, Groups, ArchConfig, FI, EventLogs};
+            {ok, Result, Groups, ArchConfig, FI, EventLogs};
         {error, FileReason} ->
             {error, file:format_error(FileReason)}
     end.
@@ -213,7 +149,7 @@ split_cases([Case | Cases], Acc, EventLogs) ->
             [<<"event log", _/binary>>, RawEventLog] =
                 binary:split(LogRow,  <<": ">>),
             {Doc, ResultCase} = split_doc(DocAndResult, []),
-            Result = lux_log:parse_result(ResultCase),
+            Result = parse_result(ResultCase),
             EventLog = binary_to_list(RawEventLog),
             HtmlLog = EventLog ++ ".html",
             Res = {test_case, Name, EventLog, Doc, HtmlLog, Result},
@@ -365,6 +301,117 @@ write_config_log(ConfigLog, ConfigData) ->
                      "\n",
                      PrettyConfig
                     ]).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Results
+
+parse_summary_result(LogDir) ->
+    ResultLog = filename:join([LogDir, "lux_result.log"]),
+    case file:read_file(ResultLog) of
+        {ok, <<"result log        : ",
+               ?RESULT_LOG_VERSION,
+               "\n\n",
+               RawResult/binary>>} ->
+            %% Latest version
+            {ok, split_result(RawResult)};
+        {error, FileReason} ->
+            {error, file:format_error(FileReason)}
+    end.
+
+write_results(SummaryLog, Summary, Results, Warnings) ->
+    LogDir = filename:dirname(SummaryLog),
+    ResultFile = filename:join([LogDir, "lux_result.log"]),
+    TmpResultFile = ResultFile++".tmp",
+    case file:open(TmpResultFile, [write]) of
+        {ok, Fd} ->
+            try
+                safe_format(Fd, "~s~s\n",
+                            [?TAG("result log"), ?RESULT_LOG_VERSION]),
+                IsTmp = is_temporary(SummaryLog),
+                print_results({IsTmp, Fd}, Summary, Results, Warnings),
+                file:close(Fd),
+                ok = file:rename(TmpResultFile, ResultFile)
+            catch
+                Class:Reason ->
+                    file:close(Fd),
+                    file:delete(TmpResultFile),
+                    erlang:Class(Reason)
+            end;
+        {error, FileReason} ->
+            ReasonStr = ResultFile ++ ": " ++file:format_error(FileReason),
+            erlang:error(ReasonStr)
+    end.
+
+print_results(Fd, Summary, Results, Warnings) ->
+    %% Display most important results last
+    result_format(Fd, "\n", []),
+    SuccessScripts =
+        [Script || {ok, Script, success, _FullLineNo, _Events} <- Results],
+    result_format(Fd, "~s~p\n",
+                  [?TAG("successful"),
+                   length(SuccessScripts)]),
+    print_skip(Fd, Results),
+    print_warning(Fd, Warnings),
+    print_fail(Fd, Results),
+    print_error(Fd, Results),
+    result_format(Fd, "~s~s\n",
+                  [?TAG("summary"),
+                   [string:to_upper(Char) ||
+                       Char <- atom_to_list(Summary)]]).
+
+print_skip(Fd, Results) ->
+    case [{Script, FullLineNo} ||
+             {ok, Script, skip, FullLineNo, _Events} <- Results] of
+        [] ->
+            ok;
+        SkipScripts ->
+            result_format(Fd, "~s~p\n",
+                          [?TAG("skipped"), length(SkipScripts)]),
+            [result_format(Fd, "\t~s:~s\n", [F, L]) || {F, L} <- SkipScripts]
+    end.
+
+
+print_warning(Fd, Warnings) ->
+    case [{Script, FullLineNo} ||
+             {warning, Script, FullLineNo, _String} <- Warnings] of
+        [] ->
+            ok;
+        WarnScripts ->
+            result_format(Fd, "~s~p\n",
+                          [?TAG("warnings"), length(WarnScripts)]),
+            [result_format(Fd, "\t~s:~s\n", [F, L]) || {F, L} <- WarnScripts]
+    end.
+
+print_fail(Fd, Results) ->
+    case [{Script, FullLineNo} ||
+             {ok, Script, fail, FullLineNo, _Events} <- Results] of
+        [] ->
+            ok;
+        FailScripts ->
+            result_format(Fd, "~s~p\n",
+                          [?TAG("failed"),  length(FailScripts)]),
+            [result_format(Fd, "\t~s:~s\n", [F, L]) || {F, L} <- FailScripts]
+    end.
+
+print_error(Fd, Results) ->
+    case [{Script, FullLineNo} ||
+             {error, Script, FullLineNo, _String} <- Results] of
+        [] ->
+            ok;
+        ErrorScripts ->
+            result_format(Fd, "~s~p\n",
+                          [?TAG("errors"), length(ErrorScripts)]),
+            [result_format(Fd, "\t~s:~s\n", [F, L]) ||
+                {F, L} <- ErrorScripts]
+    end.
+
+result_format({IsTmp, Fd}, Format, Args) ->
+    IoList = io_lib:format(Format, Args),
+    case Fd of
+        undefined     -> list_to_binary(IoList);
+        Fd when IsTmp -> double_write(Fd, IoList);
+        Fd            -> safe_write(Fd, IoList)
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Event log
@@ -627,18 +674,9 @@ format_config(Config) ->
         end,
     lists:map(Fun, Config).
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
 safe_format(Fd, Format, Args) ->
     IoList = io_lib:format(Format, Args),
     safe_write(Fd, IoList).
-
-double_format(Fd, Format, Args) ->
-    IoList = io_lib:format(Format, Args),
-    case Fd of
-        undefined -> list_to_binary(IoList);
-        _         -> double_write(Fd, IoList)
-    end.
 
 safe_write(OptFd, IoList) when is_list(IoList) ->
     safe_write(OptFd, list_to_binary(IoList));
