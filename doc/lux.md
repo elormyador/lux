@@ -1,6 +1,6 @@
 Lux - LUcid eXpect scripting
 ============================
-Version 1.6 - 2014-10-21
+Version 1.7 - 2015-01-15
 
 * [Introduction](#../README)
 * [Concepts](#main_concepts)
@@ -439,10 +439,10 @@ timeout=2000]` can be overridden with `--timeout=4000`.  Explicit
 settings in architecture specific files and command line options. See
 the section *Configuration parameters* about valid configuration
 parameters. Some config parameters can have multiple values, such as
-`skip`, `skip_unless` and `require`. See their respective
-descriptions. See also the configuration parameter `--config_dir`
-about the location of the architecture specific files.  <a
-name="cmd_line_opts"/>
+`skip` and `require`. See their respective descriptions. See also the
+configuration parameter `--config_dir` about the location of the
+architecture specific files.
+<a name="cmd_line_opts"/>
 
 Command line options
 ====================
@@ -634,7 +634,7 @@ Forces Lux to not care about `--skip` and `--skip_unless` settings.
 **--require Var=Value**  
 Require that the given variable is set. The script will fail if
 the variable not is set. This option can be used multiple times,
-which means that all given `Var`s are required to be set.
+which means that all given Vars are required to be set.
 Typically require is used to test on presence of environment
 variables. `--require` is intended to be used as `[config require=Var]`
 or `[config require=Var=Value]` statements within scripts. The
@@ -911,7 +911,7 @@ Available commands:
 * tail     - display log files
 * list     - list script source
 * load     - load file with debug commands
-* next     - execute one or more commands. A multiline command counts as one command.
+* next     - execute next command. A multiline command counts as one command.
 * progress - set verbosity level of progress
 * quit     - exit lux in a controlled manner. Runs cleanup if applicable. 
 * save     - save debug state to file
@@ -923,9 +923,9 @@ lineno parameter
 Several commands has a lineno as parameter. It is a string which
 is divided in several components. The components are separated
 with a colon and are used to refer to line numbers in include
-files and macros. Each component may either be a line number,
-an (possibly abbreviated) file name or a combination of both
-separated with an at-sign (int@file).
+files, macros and loops. The first component is a bit special.
+It may be a file name or a line number. The file name may be
+abbreviated.
 
 Assume that there is a file called main, which includes a file
 called outer at line 4 and the file outer includes a file called
@@ -933,14 +933,13 @@ inner at line 12.
 
 Here are a few examples of how lineno can be used:
 
-* 3       - line 3 in file main
-* main    - first line in file main
-* 3@m     - line 3 in file main
+* 3       - line 3 in current file
+* main    - any line in file main
+* m:3     - line 3 in file main
+* :3      - line 3 in file main
 * inner   - any line in file inner
-* outer:i - any line in file inner if it is directly
-            included from outer
-* 12@o:i  - any line in file inner if it is directly
-            included from outer on line 12
+* outer   - any line in file outer
+* o:12    - line 12 in file outer
 * 4:12:6  - line 6 in file inner if it is included
             on line 12 in outer and outer is included
             on line 4 in main.
@@ -966,8 +965,8 @@ When a breakpoint is set it may either be normal (default)
 or temporary. The difference between them is that normal
 breakpoints remains after break while temporary breakpoints
 are automatically deleted when they have been used once.
+delete means that the breakpoint immediately is removed.
 
-delete means that the breakpoint immediately is removed
 Without parameters, all breakpoints are listed.
 
 
@@ -1037,14 +1036,15 @@ load file with debug commands
 
 * file - file name. Default is "lux.debug".; string  
 
-next [n_commands]
------------------
+next
+----
 
-execute one or more commands. A multiline command counts as one command.
+execute next command. A multiline command counts as one command.
 
 **Parameters:**  
 
-* n_commands - number of commands; 1 >= integer =< infinity  
+* no parameters
+
 
 progress [level]
 ----------------
