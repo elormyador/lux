@@ -1,0 +1,13 @@
+[shell test]
+    -bad
+    """!
+    INIT
+    bad
+    START
+    bad
+    DONE
+    """
+    ?INIT
+    ?START
+    -
+    ?DONE
